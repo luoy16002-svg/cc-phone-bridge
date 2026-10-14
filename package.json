@@ -1,0 +1,43 @@
+{
+  "name": "cc-phone-bridge",
+  "version": "1.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Duty Desk: use Claude Code on your computer from your phone, over your own network.",
+  "license": "MIT",
+  "author": "fuddle_yichi",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/luoy16002-svg/cc-phone-bridge.git"
+  },
+  "keywords": [
+    "claude-code",
+    "claude",
+    "phone",
+    "mobile",
+    "pwa",
+    "remote",
+    "lan",
+    "self-hosted"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "build": "node build/build-assets.mjs",
+    "prepare": "node build/build-assets.mjs",
+    "test": "node test/smoke.mjs && node test/i18n-check.mjs",
+    "shots": "node test/shots.mjs"
+  },
+  "dependencies": {
+    "qrcode": "1.5.4"
+  },
+  "devDependencies": {
+    "@fontsource/jetbrains-mono": "5.3.0",
+    "@tabler/icons": "3.48.0",
+    "dompurify": "3.4.16",
+    "lxgw-wenkai-screen-web": "1.522.0",
+    "marked": "18.0.14"
+  }
+}

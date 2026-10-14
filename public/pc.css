@@ -1,0 +1,18 @@
+.pc { max-width: 760px; margin: 0 auto; padding: 28px 20px 40px; display: grid; gap: 14px; }
+.pc .brand { margin-bottom: 6px; }
+.pair { grid-template-columns: 1fr auto; align-items: center; gap: 20px; }
+.pair-code { display: grid; gap: 8px; justify-items: start; }
+.pair-code .bigcode { text-align: left; font-size: 46px; }
+.pair-qr { display: grid; justify-items: center; gap: 8px; text-align: center; }
+.pair-qr img { width: 200px; height: 200px; background: var(--surface); border-radius: 12px; border: 1px solid var(--line-2); padding: 8px; }
+.pair-qr p { font-size: 13px; }
+.pair-qr b { font-family: var(--mono); font-weight: 600; color: var(--ink); }
+.dev { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 12px; padding: 10px 2px; border-top: 1px solid var(--line-2); }
+.dev:first-child { border-top: 0; }
+.dev b { font-weight: 600; display: block; }
+.dev small { color: var(--muted); font-size: 12.5px; }
+.dev button { border: 1px solid var(--line); background: var(--surface); color: var(--danger); border-radius: 10px; padding: 7px 12px; }
+.none { color: var(--muted); font-size: 14px; }
+@media (max-width: 560px) { .pair { grid-template-columns: 1fr; } }
+.pc .kv dd { font-family: var(--sans); font-size: 14px; }
+.pc .kv dd.ip { font-family: var(--mono); font-size: 13px; }

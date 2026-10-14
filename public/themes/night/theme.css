@@ -1,0 +1,24 @@
+/* generated from theme.json by build/notebook_art.py: edit theme.json, not this file */
+:root {
+  color-scheme: dark;
+  --bg: #18222f;
+  --surface: #202c3b;
+  --surface-2: #243244;
+  --line: #3a4d66;
+  --line-2: #2d3c51;
+  --ink: #e3ecf6;
+  --ink-2: #bccbdc;
+  --muted: #8fa4bb;
+  --accent: #94c4f0;
+  --wash: #36597f;
+  --danger: #e7907e;
+  --code: #1c2735;
+  --shade: rgba(0, 0, 0, 0.35);
+  --paper: url("/themes/night/paper.webp");
+  --frame-card: url("/themes/night/frame-card.png");
+  --frame-bubble: url("/themes/night/frame-bubble.png");
+  --frame-btn: url("/themes/night/frame-btn.png");
+  --frame-quiet: url("/themes/night/frame-quiet.png");
+  --frame-input: url("/themes/night/frame-input.png");
+  --frame-alert: url("/themes/night/frame-alert.png");
+}

@@ -1,0 +1,17 @@
+{
+  "names": { "en": "Clear Sky" },
+  "name": "晴空",
+  "scheme": "light",
+  "color": "#ddebf6",
+  "colors": {
+    "bg": "#ddebf6", "surface": "#f7fbfe", "surface2": "#eef5fb", "line": "#bcd2e6", "line2": "#d3e3f0",
+    "ink": "#1d3550", "ink2": "#3a5874", "muted": "#56718b", "accent": "#33679a", "wash": "#a9cdec",
+    "danger": "#ad4f3d", "code": "#e9f2fa", "shade": "rgba(29, 53, 80, 0.10)"
+  },
+  "art": {
+    "paper": "#ddebf6", "fibreDark": "#3e6284", "fibreLight": "#ffffff", "speck": "#3e6284",
+    "ink": "#3a6691", "inkLight": "#80a3c4", "alertInk": "#be7060",
+    "cardFill": "#f7fbfe", "bubbleFill": "#ecf4fb", "bubbleWash": "#c4def3", "bubbleInk": "#608cb6",
+    "buttonFill": "#f0f6fc", "buttonWash": "#96c2e8", "quietFill": "#f3f8fc", "inputFill": "#fafcfe", "inputInk": "#92b0cc"
+  }
+}

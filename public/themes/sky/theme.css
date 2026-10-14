@@ -1,0 +1,24 @@
+/* generated from theme.json by build/notebook_art.py: edit theme.json, not this file */
+:root {
+  color-scheme: light;
+  --bg: #ddebf6;
+  --surface: #f7fbfe;
+  --surface-2: #eef5fb;
+  --line: #bcd2e6;
+  --line-2: #d3e3f0;
+  --ink: #1d3550;
+  --ink-2: #3a5874;
+  --muted: #56718b;
+  --accent: #33679a;
+  --wash: #a9cdec;
+  --danger: #ad4f3d;
+  --code: #e9f2fa;
+  --shade: rgba(29, 53, 80, 0.10);
+  --paper: url("/themes/sky/paper.webp");
+  --frame-card: url("/themes/sky/frame-card.png");
+  --frame-bubble: url("/themes/sky/frame-bubble.png");
+  --frame-btn: url("/themes/sky/frame-btn.png");
+  --frame-quiet: url("/themes/sky/frame-quiet.png");
+  --frame-input: url("/themes/sky/frame-input.png");
+  --frame-alert: url("/themes/sky/frame-alert.png");
+}

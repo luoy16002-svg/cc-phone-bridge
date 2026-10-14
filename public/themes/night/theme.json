@@ -1,0 +1,17 @@
+{
+  "names": { "en": "Night Flight" },
+  "name": "夜航",
+  "scheme": "dark",
+  "color": "#18222f",
+  "colors": {
+    "bg": "#18222f", "surface": "#202c3b", "surface2": "#243244", "line": "#3a4d66", "line2": "#2d3c51",
+    "ink": "#e3ecf6", "ink2": "#bccbdc", "muted": "#8fa4bb", "accent": "#94c4f0", "wash": "#36597f",
+    "danger": "#e7907e", "code": "#1c2735", "shade": "rgba(0, 0, 0, 0.35)"
+  },
+  "art": {
+    "paper": "#18222f", "fibreDark": "#0b1119", "fibreLight": "#a9c4e2", "speck": "#9dbad9",
+    "ink": "#9cc4ea", "inkLight": "#6a8aad", "alertInk": "#e7907e",
+    "cardFill": "#202c3b", "bubbleFill": "#26394f", "bubbleWash": "#30527a", "bubbleInk": "#7fa9d2",
+    "buttonFill": "#28405c", "buttonWash": "#3a6896", "quietFill": "#223041", "inputFill": "#1c2735", "inputInk": "#5d7896"
+  }
+}

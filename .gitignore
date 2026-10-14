@@ -1,0 +1,9 @@
+node_modules/
+build/out/
+# made by `npm run build` from the packages in node_modules
+public/vendor/
+public/fonts/
+public/icons.svg
+*.log
+.DS_Store
+Thumbs.db

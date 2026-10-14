@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" type="image/png" href="/favicon.png">
+<link id="theme-light" rel="stylesheet" href="/theme/light.css" media="(prefers-color-scheme: light)">
+<link id="theme-dark" rel="stylesheet" href="/theme/dark.css" media="(prefers-color-scheme: dark)">
+<script src="/boot.js"></script>
+<link rel="stylesheet" href="/fonts/wenkai/wenkai.css">
+<link rel="stylesheet" href="/app.css">
+<link rel="stylesheet" href="/pc.css">
+<title>值班台 · 电脑</title>
+</head>
+<body>
+<main class="pc">
+  <div class="brand"><img src="/icon-180.png" alt=""><div><b data-t>值班台</b><small data-t>这一页只在这台电脑上能打开</small></div></div>
+
+  <section class="form pair">
+    <div class="pair-code">
+      <h2 data-t>配对数字</h2>
+      <div class="bigcode" id="code">------</div>
+      <p id="left">&nbsp;</p>
+      <button class="btn quiet" id="rotate" type="button" data-t>换一个</button>
+    </div>
+    <div class="pair-qr">
+      <img id="qr" alt="手机扫码打开值班台" data-t-alt width="200" height="200">
+      <p><span data-t>用手机相机扫一下，或在手机浏览器打开</span><br><b id="url"></b></p>
+    </div>
+  </section>
+
+  <section class="form">
+    <h2 data-t>手机上怎么装</h2>
+    <ol class="steps">
+      <li data-t>扫上面的码，手机浏览器会打开值班台</li>
+      <li data-t>iPhone 点分享按钮，选“添加到主屏幕”；安卓在菜单里选“添加到主屏幕”</li>
+      <li data-t>从主屏幕打开值班台，填上面的 6 位数字</li>
+    </ol>
+    <p data-t>手机要和这台电脑在同一个网络里。手机开着代理时，代理要放行局域网地址。</p>
+  </section>
+
+  <section class="form">
+    <h2 data-t>已配对的设备</h2>
+    <div id="devices" class="choices"></div>
+  </section>
+
+  <section class="form">
+    <h2 data-t>状态</h2>
+    <dl class="kv" id="status"></dl>
+  </section>
+</main>
+<script src="/i18n.js"></script>
+<script src="/pc.js"></script>
+</body>
+</html>
