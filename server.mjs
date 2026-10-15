@@ -427,6 +427,48 @@ function browse(p) {
   return { path: target, name: folderOf(target), parent: isRoot ? null : path.dirname(target), roots: CONFIG.roots.map((r) => ({ name: folderOf(r) || r, path: r })), dirs };
 }
 
+// ---------------------------------------------------------------- suggestions from other tools
+// Another program on this computer (a job watcher, a build bot) writes a JSON file of things worth starting; the
+// desk shows them and a tap starts the conversation with the prompt the program wrote. Nothing starts by itself.
+function readSuggestions() {
+  const file = CONFIG.suggestions?.file;
+  if (!file) return [];
+  let data;
+  try {
+    data = JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch {
+    return [];
+  }
+  const raw = Array.isArray(data) ? data : Array.isArray(data?.items) ? data.items : [];
+  const now = Date.now() / 1000;
+  const gone = new Set(store.dismissed);
+  return raw
+    .filter((x) => x && typeof x.id === 'string' && /^[\w.:-]{1,80}$/.test(x.id) && typeof x.prompt === 'string' && x.prompt.trim()
+      && !gone.has(x.id) && (!x.expires || Number(x.expires) > now) && typeof x.cwd === 'string' && isDir(x.cwd) && inRoots(x.cwd))
+    .slice(0, 12)
+    .map((x) => ({
+      id: x.id,
+      title: String(x.title || '').slice(0, 160),
+      detail: String(x.detail || '').slice(0, 300),
+      link: /^https:\/\/[^\s]+$/.test(String(x.link || '')) ? String(x.link).slice(0, 600) : '',
+      cwd: path.resolve(x.cwd),
+      folder: folderOf(path.resolve(x.cwd)),
+      prompt: String(x.prompt).slice(0, 8000),
+      created: Number(x.created) || 0,
+      expires: Number(x.expires) || 0,
+    }));
+}
+
+function sendSuggestions() {
+  if (!deskSubs.size) return;
+  const items = readSuggestions();
+  for (const res of deskSubs) sse(res, 'suggestions', { items });
+}
+
+if (CONFIG.suggestions?.file) {
+  fs.watchFile(CONFIG.suggestions.file, { interval: 3000 }, () => sendSuggestions());
+}
+
 function recentFolders() {
   const out = [];
   const seen = new Set();
@@ -718,6 +760,15 @@ async function handleApi(req, res, url, ip) {
     const m = /^\/api\/files\/([0-9a-f]{12})\/(\d\.(jpg|png|webp|gif))$/.exec(p);
     if (!m) return json(res, 400, { error: 'bad_name' });
     return sendFile(req, res, path.join(DATA_DIR, 'uploads', m[1], m[2]), { 'Cache-Control': 'private, max-age=86400' });
+  }
+  if (method === 'GET' && p === '/api/suggestions') return json(res, 200, { items: readSuggestions() });
+  if (method === 'POST' && p === '/api/suggestions/dismiss') {
+    const b = await readBody(req);
+    const id = String(b.id || '');
+    if (!/^[\w.:-]{1,80}$/.test(id)) return json(res, 400, { error: 'bad_id' });
+    store.dismiss(id);
+    sendSuggestions();
+    return json(res, 200, { ok: true });
   }
   if (method === 'GET' && p === '/api/sessions') {
     const windows = pcWindows();

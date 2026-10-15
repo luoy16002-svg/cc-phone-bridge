@@ -568,16 +568,50 @@
   function showDesk() {
     stopAll();
     const cards = h('div', { class: 'cards' }, h('div', { class: 'hint-row' }, t('在读电脑上的对话…')));
+    const suggest = h('div', { class: 'suggest' });
     const sub = h('span', { class: 'status' });
     mount(h('div', { class: 'view' },
       top({ title: t('值班台'), sub, right: [h('button', { class: 'ib', 'aria-label': t('设置'), type: 'button', onclick: () => go('#/settings') }, icon('settings'))] }),
       banner(),
       h('main', { class: 'scroll page' },
         h('button', { class: 'btn wide', type: 'button', onclick: () => go('#/new') }, icon('plus', 'sm'), t('新对话')),
+        suggest,
         cards),
       h('div')));
 
     let list = [];
+    // suggestions other tools on the computer wrote: a tap starts the conversation, nothing starts by itself
+    const drawSuggest = (items) => {
+      if (!items || !items.length) {
+        suggest.replaceChildren();
+        return;
+      }
+      const dismiss = (x) => api('POST', '/api/suggestions/dismiss', { id: x.id }).catch(() => null);
+      suggest.replaceChildren(h('div', { class: 'day' }, t('建议')), ...items.map((x) => {
+        const startBtn = h('button', { class: 'btn small', type: 'button' }, t('开始'));
+        startBtn.onclick = async () => {
+          startBtn.disabled = true;
+          toast(t('正在开始…'));
+          try {
+            const r = await api('POST', '/api/sessions', { cwd: x.cwd, text: x.prompt });
+            await dismiss(x);
+            go(`#/s/${r.id}`);
+          } catch (e) {
+            startBtn.disabled = false;
+            toast(e.status === 403 ? t('这个文件夹不在电脑允许的范围里') : t('Claude Code 没能启动'));
+          }
+        };
+        return h('div', { class: 'card sugg' },
+          h('div', { class: 't' }, x.title || x.id),
+          x.detail ? h('div', { class: 'p' }, x.detail) : null,
+          h('div', { class: 'acts' },
+            startBtn,
+            x.link ? h('a', { class: 'btn small quiet', href: x.link, target: '_blank', rel: 'noopener noreferrer' }, t('看看')) : null,
+            h('button', { class: 'btn small quiet', type: 'button', onclick: async () => { await dismiss(x); } }, t('不用了')),
+            h('span', { class: 'm' }, h('span', null, x.folder), x.created ? h('span', null, ago(x.created * 1000)) : null)));
+      }));
+    };
+    api('GET', '/api/suggestions').then((r) => drawSuggest(r.items)).catch(() => null);
     const card = (s) => h('button', { class: 'card', type: 'button', onclick: () => go(`#/s/${s.id}`) },
       h('div', { class: 't' }, s.title || t('新对话')),
       h('div', { class: 'p' }, s.state === 'running' ? (s.lastPrompt ? t('在做：{text}', { text: s.lastPrompt }) : t('在做…')) : (s.lastReply || s.lastPrompt || t('还没有回复'))),
@@ -617,6 +651,7 @@
     let pending = false;
     stream(() => '/api/stream', {
       onEvent: (ev, d) => {
+        if (ev === 'suggestions') return drawSuggest(d.items);
         if (ev !== 'session') return;
         const i = list.findIndex((s) => s.id === d.id);
         if (i >= 0) list[i] = d;

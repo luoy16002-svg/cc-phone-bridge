@@ -1,10 +1,15 @@
 {
   "port": 8060,
-  "roots": ["~/Projects"],
+  "roots": [
+    "~/Projects"
+  ],
   "timeZone": "America/New_York",
   "lang": "en",
   "theme": "auto",
-  "autoThemes": { "light": "sky", "dark": "night" },
+  "autoThemes": {
+    "light": "sky",
+    "dark": "night"
+  },
   "claude": {
     "command": "claude",
     "args": [],
@@ -14,14 +19,49 @@
     "resumeCommand": "claude --resume {id}"
   },
   "models": [
-    { "id": "claude-opus-5-5", "name": "Opus 5.5" },
-    { "id": "claude-sonnet-5-5", "name": "Sonnet 5.5" },
-    { "id": "claude-haiku-5-5", "name": "Haiku 5.5" },
-    { "id": "claude-fable-5-1", "name": "Fable 5.1" }
+    {
+      "id": "claude-opus-5-5",
+      "name": "Opus 5.5"
+    },
+    {
+      "id": "claude-sonnet-5-5",
+      "name": "Sonnet 5.5"
+    },
+    {
+      "id": "claude-haiku-5-5",
+      "name": "Haiku 5.5"
+    },
+    {
+      "id": "claude-fable-5-1",
+      "name": "Fable 5.1"
+    }
   ],
-  "efforts": ["low", "medium", "high", "xhigh", "max"],
-  "limits": { "idleMinutes": 20, "maxLive": 3, "uploadDays": 7, "uploadMB": 200, "logKB": 1024, "tailMs": 1500 },
-  "push": { "ntfyServer": "https://ntfy.sh", "ntfyTopic": "", "includeTitle": false },
-  "tls": { "cert": "", "key": "" },
-  "extraHosts": []
+  "efforts": [
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max"
+  ],
+  "limits": {
+    "idleMinutes": 20,
+    "maxLive": 3,
+    "uploadDays": 7,
+    "uploadMB": 200,
+    "logKB": 1024,
+    "tailMs": 1500
+  },
+  "push": {
+    "ntfyServer": "https://ntfy.sh",
+    "ntfyTopic": "",
+    "includeTitle": false
+  },
+  "tls": {
+    "cert": "",
+    "key": ""
+  },
+  "extraHosts": [],
+  "suggestions": {
+    "file": ""
+  }
 }

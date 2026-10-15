@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.2.0 (2026-10-15)
+
+- **Suggestions.** Another program on the computer (a job watcher, a build bot, a reminder script) can write a small JSON file of things worth starting. They show at the top of the desk; tap Start and the conversation begins in that program's folder with the prompt it wrote. Dismissed or expired suggestions go away. Nothing starts without a tap. Set `suggestions.file` to turn it on.
+
 ## 1.1.0 (2026-10-14)
 
 - Pick a folder for a new conversation by tapping through your folders, and make a new one where you are. No more typing paths.

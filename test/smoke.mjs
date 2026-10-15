@@ -18,7 +18,8 @@ const PROJ = fs.mkdtempSync(path.join(os.tmpdir(), 'ccpb-projects-'));
 const CWD = path.join(PROJ, 'demo');
 fs.mkdirSync(CWD);
 const OUTSIDE = fs.mkdtempSync(path.join(os.tmpdir(), 'ccpb-outside-'));
-fs.writeFileSync(path.join(DATA, 'config.json'), JSON.stringify({ roots: [PROJ], timeZone: 'America/Los_Angeles' }));
+const SUGG = path.join(DATA, 'suggestions.json');
+fs.writeFileSync(path.join(DATA, 'config.json'), JSON.stringify({ roots: [PROJ], timeZone: 'America/Los_Angeles', suggestions: { file: SUGG } }));
 fs.writeFileSync(path.join(DATA, 'settings.json'), JSON.stringify({ pushOnFinish: false }));
 fs.writeFileSync(path.join(CONF, 'settings.json'), JSON.stringify({ model: 'opus', modelSettings: { 'claude-opus-5-5': { effortLevel: 'xhigh' } } }));
 process.env.CCPB_CONFIG_DIR = CONF;
@@ -310,6 +311,24 @@ async function main() {
   const nh = (await api('GET', `/api/sessions/${ns.data.id}`)).data.events;
   check('its reply is in its history', nh.some((e) => e.k === 'text' && e.text === '收到：第一句话 (high)'));
   check('a bad folder is refused', (await api('POST', '/api/sessions', { cwd: path.join(PROJ, 'nope'), text: 'x' })).status === 400);
+
+  // suggestions written by another tool: shown when valid, gone when dismissed, never started by themselves
+  const nowS = Math.floor(Date.now() / 1000);
+  fs.writeFileSync(SUGG, JSON.stringify({ items: [
+    { id: 'job-1', title: 'A job worth a look', detail: '5 bids', link: 'https://example.com/job', cwd: CWD, prompt: 'look at job 1', created: nowS, expires: nowS + 3600 },
+    { id: 'old', title: 'expired', cwd: CWD, prompt: 'x', expires: nowS - 10 },
+    { id: 'away', title: 'outside the roots', cwd: OUTSIDE, prompt: 'x' },
+    { id: 'bad id!', title: 'bad id', cwd: CWD, prompt: 'x' },
+    { id: 'js-link', title: 'script link', link: 'javascript:alert(1)', cwd: CWD, prompt: 'y' },
+  ] }));
+  const sg = await api('GET', '/api/suggestions');
+  const ids = (sg.data.items || []).map((x) => x.id);
+  check('valid suggestions are listed, expired / outside / bad ones are not', JSON.stringify(ids) === JSON.stringify(['job-1', 'js-link']), JSON.stringify(ids));
+  check('a suggestion carries its folder and prompt, and only https links', sg.data.items?.[0]?.folder === 'demo' && sg.data.items[0].prompt === 'look at job 1' && sg.data.items[1].link === '', JSON.stringify(sg.data.items));
+  check('suggestions need a paired phone', (await api('GET', '/api/suggestions', null, 'nope')).status === 401);
+  check('a dismissed suggestion goes away', (await api('POST', '/api/suggestions/dismiss', { id: 'job-1' })).status === 200
+    && !(await api('GET', '/api/suggestions')).data.items.some((x) => x.id === 'job-1'));
+  check('dismissing needs a proper id', (await api('POST', '/api/suggestions/dismiss', { id: '../x' })).status === 400);
 
   console.log('restart while a turn runs');
   const L3 = listen(ns.data.id);

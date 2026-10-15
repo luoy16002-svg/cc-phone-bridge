@@ -18,6 +18,7 @@ Duty Desk is a small server that runs next to Claude Code, plus a web app you ad
 - **A notification when a turn ends** while you're away, through [ntfy](https://ntfy.sh). It says that something finished and how long it took. The conversation's title is left out unless you allow it.
 - **Light and dark**, both drawn by hand, following the phone. A theme is a folder of colours and drawings, so you can add your own.
 - **English and Chinese.** Each phone picks its own.
+- **Suggestions from your own scripts.** A watcher or build bot on the computer can write a JSON file of things worth starting; they show at the top of the desk and start with one tap. See [Suggestions](#suggestions).
 - **No app store.** It installs to the home screen on iPhone and Android.
 
 ## What you need
@@ -71,7 +72,31 @@ Everything has a default. To change something, put it in `config.json` in the da
 | `push.includeTitle` | `false` | Put the conversation's title in the notification. |
 | `tls.cert`, `tls.key` | off | Serve HTTPS with your own certificate, for example from `tailscale cert` or mkcert. |
 | `extraHosts` | | Extra host names the server answers to (it already accepts its own name, `localhost` and `*.ts.net`). |
+| `suggestions.file` | off | A JSON file other programs write; see [Suggestions](#suggestions). |
 | `limits` | | Idle minutes before a process closes (20), processes at once (3), how long pictures from the phone are kept (7 days, 200 MB), log size (1 MB). |
+
+## Suggestions
+
+Point `suggestions.file` at a JSON file and any program on the computer can put a card at the top of the desk:
+
+```json
+{
+  "items": [
+    {
+      "id": "build-1842",
+      "title": "cafe-site nightly build failed",
+      "detail": "3 images over 400 KB",
+      "link": "https://ci.example.com/builds/1842",
+      "cwd": "C:\\Users\\me\\Projects\\cafe-site",
+      "prompt": "Look at why the nightly build failed and fix it",
+      "created": 1760534400,
+      "expires": 1760541600
+    }
+  ]
+}
+```
+
+The card shows the title, the detail and the folder. **Start** begins a new conversation in `cwd` with `prompt`, using the computer's default model and effort; **Look** opens `link` (https only); **Dismiss** hides it for good. `id` is letters, digits and `.:_-`; `cwd` must be inside `roots`; cards past `expires` (seconds since 1970) are left out. The desk updates within a few seconds of the file changing. Nothing starts by itself: a conversation begins only when someone taps Start on a paired phone.
 
 ## How it works
 

@@ -62,6 +62,7 @@ npm start
 - `timeZone`：手机上的时间按这个时区显示。
 - `push.ntfyTopic`：做完提醒用的 ntfy 主题，起一个长的随机名字，知道名字的人都能读到。
 - `tls.cert`、`tls.key`：用自己的证书开 HTTPS，比如 `tailscale cert` 或 mkcert 生成的。
+- `suggestions.file`：别的程序写的建议文件。电脑上的脚本（比如找活的监控、构建机器人）往里写想做的事，值班台首页最上面就会出现卡片，点“开始”就在那个文件夹里用它写好的要求开一个新对话；点“不用了”就不再显示，过期的自动消失。不点就什么都不会启动。文件格式见[英文说明](README.md#suggestions)。
 
 ## 安全
 

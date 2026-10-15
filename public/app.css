@@ -315,3 +315,13 @@ html.phone #app {
 .brand img { width: 48px; height: 48px; border-radius: 12px; box-shadow: 0 0 0 1.5px var(--line); }
 .brand b { font-size: 23px; font-weight: 400; display: block; line-height: 1.3; }
 .brand small { color: var(--muted); font-size: 14px; }
+
+/* suggestions written by other tools on the computer */
+.suggest { display: grid; gap: 12px; }
+.suggest:empty { display: none; }
+.card.sugg { cursor: default; }
+.card.sugg .t { white-space: normal; }
+.card.sugg .acts { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px; }
+.card.sugg .acts .m { margin-top: 0; margin-left: auto; }
+.btn.small { min-height: 40px; padding: 6px 14px; font-size: 15px; }
+.card.sugg a.btn { text-decoration: none; }

@@ -25,7 +25,8 @@ const PROJ = fs.mkdtempSync(path.join(os.tmpdir(), 'ccpb-shots-proj-'));
 const ROOTDIR = path.join(PROJ, 'Projects');
 for (const d of ['notes-app', 'english', 'blog', 'cafe-site', 'photo-tools', 'scripts']) fs.mkdirSync(path.join(ROOTDIR, d), { recursive: true });
 fs.mkdirSync(OUT, { recursive: true });
-fs.writeFileSync(path.join(DATA, 'config.json'), JSON.stringify({ roots: [ROOTDIR], timeZone: 'America/Los_Angeles', lang: LANG }));
+const SUGG = path.join(DATA, 'suggestions.json');
+fs.writeFileSync(path.join(DATA, 'config.json'), JSON.stringify({ roots: [ROOTDIR], timeZone: 'America/Los_Angeles', lang: LANG, suggestions: { file: SUGG } }));
 fs.writeFileSync(path.join(DATA, 'settings.json'), JSON.stringify({ pushOnFinish: true }));
 fs.writeFileSync(path.join(CONF, 'settings.json'), JSON.stringify({ model: 'opus', modelSettings: { 'claude-opus-5-5': { effortLevel: 'xhigh' } } }));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -34,6 +35,8 @@ const now = Date.now();
 // ---------------------------------------------------------------- what the sample conversations say
 const W = {
   zh: {
+    sugTitle: 'cafe-site 夜间构建失败：菜单页的图片尺寸检查没过', sugDetail: '构建机器人 · 3 张图片超过 400 KB',
+    sugPrompt: '看一下 cafe-site 夜间构建为什么失败，把超大的菜单图片压到 400 KB 以内，再构建一次',
     build: '看一下现在能不能构建', buildDesc: '构建网页版', built: '能构建，2.1 秒完成，没有警告。',
     close: '把 reminders.json 里已经过期的提醒关掉，告诉我关了哪些',
     list: '列出时间早于今天、还没关的提醒', check: '检查 JSON 还能正常读',
@@ -46,6 +49,8 @@ const W = {
     other: '别的文件夹', newBtn: '新建', moreLabel: '更多', folder: 'english-cards',
   },
   en: {
+    sugTitle: 'cafe-site nightly build failed: the menu page image check', sugDetail: 'Build bot · 3 images over 400 KB',
+    sugPrompt: 'Look at why the cafe-site nightly build failed, shrink the oversized menu images under 400 KB and build again',
     build: 'Can you check whether it builds now?', buildDesc: 'Build the web app', built: 'It builds: 2.1 s, no warnings.',
     close: 'Close the reminders in reminders.json that are past due, and tell me which ones',
     list: 'List open reminders dated before today', check: 'Check the JSON still parses',
@@ -168,6 +173,8 @@ async function shot(name, url, { ctx = phone, tk = token, wait = 900, act, theme
   await context.close();
 }
 const openTools = async (p) => { await p.click('.tools >> nth=1 >> .hd'); await sleep(250); };
+fs.writeFileSync(SUGG, JSON.stringify({ items: [{ id: 'build-cafe-site', title: W.sugTitle, detail: W.sugDetail, cwd: path.join(ROOTDIR, 'cafe-site'),
+  prompt: W.sugPrompt, link: 'https://example.com/builds/1842', created: Math.floor(Date.now() / 1000) - 180, expires: Math.floor(Date.now() / 1000) + 7200 }] }));
 await shot('01-pair', '/', { tk: null });
 await shot('03-list', '/#/');
 await shot('04-conversation', `/#/s/${A}`);
