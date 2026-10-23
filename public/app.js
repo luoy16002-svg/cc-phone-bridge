@@ -357,6 +357,9 @@
     let busy = false;
     let blocked = '';
     let queueText = '';
+    let running = false;
+    let branch = '';
+    const placeholderNow = () => (running ? t('接着写，这轮做完再发') : branch ? t('在新分支里接着说…') : placeholder);
 
     const fit = () => {
       ta.style.height = 'auto';
@@ -368,7 +371,7 @@
       thumbs.replaceChildren(...images.map((im, i) => h('div', { class: 'thumb' },
         h('img', { src: im.preview, alt: '' }),
         h('button', { type: 'button', 'aria-label': t('去掉这张图'), onclick: () => { URL.revokeObjectURL(im.preview); images.splice(i, 1); refresh(); } }, icon('x', 'xs')))));
-      const text = blocked || queueText;
+      const text = blocked || queueText || branch;
       hint.hidden = !text;
       hint.textContent = text;
     };
@@ -427,15 +430,26 @@
     return {
       el,
       ta,
-      setRunning(running, text) {
+      setRunning(on, text) {
+        running = on;
         stop.hidden = !running || !onStop;
-        ta.placeholder = running ? t('接着写，这轮做完再发') : placeholder;
+        ta.placeholder = placeholderNow();
         queueText = text || '';
         refresh();
       },
       setBlocked(text) {
         if (blocked === (text || '')) return;
         blocked = text || '';
+        refresh();
+      },
+      // the message will start a branch: the send button, the placeholder and the line under the box say so
+      setBranch(text) {
+        if (branch === (text || '')) return;
+        branch = text || '';
+        send.classList.toggle('branch', !!branch);
+        send.setAttribute('aria-label', branch ? t('在新分支里发出') : t('发出'));
+        send.replaceChildren(icon(branch ? 'git-branch' : 'send-2'));
+        ta.placeholder = placeholderNow();
         refresh();
       },
     };
@@ -939,12 +953,13 @@
   async function showSession(id) {
     stopAll();
     if (!S.models) loadState().catch(() => null);
-    const C = { id, hist: [], live: new Map(), cursor: 0, hasMore: false, state: 'idle', queue: 0, liveText: '', activity: null, since: 0, expanded: new Set(), open: new Set(), session: null, pc: { open: false, busy: false }, pcSince: 0 };
+    const C = { id, hist: [], live: new Map(), cursor: 0, hasMore: false, state: 'idle', queue: 0, liveText: '', activity: null, since: 0, expanded: new Set(), open: new Set(), session: null, pc: { open: false, busy: false, held: false }, pcSince: 0 };
     const timeline = h('div', { class: 'timeline', 'aria-live': 'polite' });
     const liveBox = h('div', { class: 'a live', hidden: true });
     const activity = h('div', { class: 'activity', hidden: true });
     const pcNote = h('div', { class: 'pcnote', hidden: true });
-    const scroller = h('main', { class: 'scroll' }, pcNote, timeline);
+    const fromLine = h('button', { class: 'fromline', type: 'button', hidden: true });
+    const scroller = h('main', { class: 'scroll' }, pcNote, fromLine, timeline);
     const jump = h('button', { class: 'jump', type: 'button', hidden: true }, icon('arrow-down', 'xs'), t('最新'));
     const title = h('h1', null, '');
     const sub = h('button', { class: 'sub subbtn', type: 'button', 'aria-label': t('模型和思考强度') });
@@ -957,9 +972,16 @@
       placeholder: t('接着说…'),
       draftKey: `s.${id}`,
       onSend: async (text, images) => {
+        if (heldByPc()) return branchOff(C, { text, images });
         try {
           return await api('POST', `/api/sessions/${id}/messages`, { text, images });
         } catch (e) {
+          if (e.message === 'pc_holds') {
+            // the computer took the thread a moment ago: go on in a branch, nothing is lost
+            C.pc.held = true;
+            drawHeader();
+            return branchOff(C, { text, images });
+          }
           if (e.message === 'pc_busy') e.shown = t('电脑上正在做这个对话，做完再发');
           throw e;
         }
@@ -980,6 +1002,8 @@
     scroller.addEventListener('scroll', () => { if (nearBottom()) jump.hidden = true; }, { passive: true });
 
     const pcBusy = () => C.pc.busy && C.state !== 'running';
+    // Codex on the computer has the thread open: only it can write the thread, so the phone goes on in a branch
+    const heldByPc = () => C.pc.held && C.state !== 'running' && !pcBusy();
 
     function drawHeader() {
       const s = C.session || {};
@@ -989,10 +1013,19 @@
         `${s.folder ? `${s.folder} · ` : ''}${modelLine(s)}${C.state === 'running' ? ` · ${t('在做')}` : pcBusy() ? ` · ${t('电脑上在做')}` : ''}`, icon('chevron-down', 'xs'));
       comp.setRunning(C.state === 'running', C.queue ? t('还有 {n} 条排队，这一轮做完就发', { n: C.queue }) : '');
       comp.setBlocked(pcBusy() ? t('电脑上正在做这个对话，做完再发') : '');
-      pcNote.hidden = !C.pc.open && !pcBusy();
+      comp.setBranch(heldByPc() ? t('电脑上开着这个对话，这条会发到新分支里') : '');
+      pcNote.hidden = !C.pc.open && !pcBusy() && !heldByPc();
       pcNote.replaceChildren(...(pcBusy()
         ? [h('span', { class: 'dot run' }), h('span', null, t('电脑上正在做这个对话，这里跟着实时显示。等它做完，手机上就能接着发。'))]
-        : [icon('device-desktop', 'xs'), h('span', null, t('这个对话在电脑上也开着。手机上发的会接在后面，电脑那个窗口要重新打开才看得到。'))]));
+        : heldByPc()
+          ? [icon('git-branch', 'xs'), h('span', null, t('电脑上的 Codex 正开着这个对话，只有它能接着写。这里发出的消息会从最新一轮分出一个新对话，原对话不动。'))]
+          : [icon('device-desktop', 'xs'), h('span', null, t('这个对话在电脑上也开着。手机上发的会接在后面，电脑那个窗口要重新打开才看得到。'))]));
+      const from = s.from;
+      fromLine.hidden = !from;
+      if (from) {
+        fromLine.replaceChildren(icon('git-branch', 'xs'), h('span', null, from.title ? t('分支自「{title}」', { title: from.title }) : t('分支自另一个对话')), icon('chevron-right', 'xs'));
+        fromLine.onclick = () => go(`#/s/${from.id}`);
+      }
     }
 
     // events (history, then live ones the history does not have yet) -> blocks -> DOM, reusing unchanged elements
@@ -1094,10 +1127,16 @@
       return out;
     }
 
+    // A message the conversation can be branched from: one in the record (Codex: with the turn it opened).
+    const branchable = (e) => !e.pending && !e.state && !e.command && (agentOf(C.session) === 'codex' ? !!e.turn : /^[0-9a-f-]{36}$/i.test(e.id));
+
     function drawUser(b) {
       const e = b.e;
       const st = e.state === 'canceled' ? t('已取消') : e.state === 'queued' ? (C.state === 'running' ? t('排队中') : t('发送中')) : '';
       const imgs = Array.isArray(e.images) ? e.images : [];
+      const fork = C.session && branchable(e)
+        ? h('button', { class: 'br', type: 'button', 'aria-label': t('从这里分支'), onclick: () => openBranch(C, e) }, icon('git-branch', 'xs'))
+        : null;
       return h('div', { class: `u${e.state === 'canceled' ? ' canceled' : ''}${e.command ? ' cmd' : ''}` },
         imgs.length ? h('div', { class: 'imgs' }, imgs.map((ref) => {
           const img = h('img', { alt: t('附图') });
@@ -1106,7 +1145,7 @@
         })) : null,
         typeof e.images === 'number' && e.images > 0 ? h('div', { class: 'imgchip' }, icon('photo', 'xs'), e.images > 1 ? t('{n} 张图', { n: e.images }) : t('图片')) : null,
         e.text ? h('div', { class: 'tx' }, e.text) : null,
-        h('div', { class: 'ft' }, st ? h('span', { class: 'q' }, st) : null, e.pending || e.state ? icon('device-mobile', 'xs') : null, e.t ? F.time.format(e.t) : ''));
+        h('div', { class: 'ft' }, fork, st ? h('span', { class: 'q' }, st) : null, e.pending || e.state ? icon('device-mobile', 'xs') : null, e.t ? F.time.format(e.t) : ''));
     }
 
     function stepTime(l) {
@@ -1303,7 +1342,7 @@
           if (d.what === 'writing') C.liveText = '';
         } else if (d.k === 'pc') {
           const was = C.pc.busy;
-          C.pc = { open: !!d.open, busy: !!d.busy };
+          C.pc = { open: !!d.open, busy: !!d.busy, held: !!d.held };
           if (d.busy && !was) {
             const u = events().reverse().find((e) => e.k === 'user' && !e.state);
             C.pcSince = u && u.t && Date.now() - u.t < 3600000 ? u.t : Date.now();
@@ -1329,7 +1368,7 @@
       C.hasMore = r.hasMore;
       C.state = r.session.state;
       C.queue = r.session.queue;
-      C.pc = { open: !!r.session.openOnPc, busy: !!r.session.pcBusy };
+      C.pc = { open: !!r.session.openOnPc && !r.session.held, busy: !!r.session.pcBusy, held: !!r.session.held };
       if (C.pc.busy) {
         const u = [...r.events].reverse().find((e) => e.k === 'user');
         C.pcSince = u?.t || Date.now();
@@ -1395,6 +1434,55 @@
       save));
   }
 
+  // Start a branch and open it: the message goes to the new conversation, this one stays as it was.
+  async function branchOff(C, body) {
+    toast(t('正在分支…'));
+    try {
+      const r = await api('POST', `/api/sessions/${C.id}/fork`, body);
+      toast(t('已在新分支里发出'));
+      go(`#/s/${r.id}`);
+      return r;
+    } catch (e) {
+      if (e.message === 'no_such_dir') e.shown = t('这个文件夹已经不在了');
+      else if (!(e instanceof Unpaired) && e.message !== 'Failed to fetch') e.shown = t('没能分出新对话');
+      throw e;
+    }
+  }
+
+  // From a message (e): a new conversation with what came before it, the message ready to edit and send.
+  // Without one: a new conversation that carries all of this one.
+  function openBranch(C, e) {
+    const users = C.hist.filter((x) => x.k === 'user' && !x.command);
+    const first = e && !C.hasMore && users[0]?.id === e.id;
+    const ta = h('textarea', { class: 'input', rows: 4, 'aria-label': t('要求') });
+    ta.value = e?.text || '';
+    const sendBtn = h('button', { class: 'btn wide', type: 'button' }, icon('git-branch', 'sm'), t('在新分支里发出'));
+    const refresh = () => { sendBtn.disabled = !ta.value.trim(); };
+    ta.addEventListener('input', refresh);
+    refresh();
+    let close = null;
+    sendBtn.addEventListener('click', async () => {
+      const text = ta.value.trim();
+      if (!text) return;
+      sendBtn.disabled = true;
+      const body = { text };
+      if (e) Object.assign(body, agentOf(C.session) === 'codex' ? { turn: e.turn } : { at: e.id });
+      try {
+        await branchOff(C, body);
+        close();
+      } catch (err) {
+        if (!(err instanceof Unpaired)) toast(err.shown || t('没发出去，再试一次'));
+        refresh();
+      }
+    });
+    close = sheet(h('div', { class: 'branch' },
+      h('h2', null, e ? t('从这条消息分支') : t('分支这个对话')),
+      h('p', null, !e ? t('新对话带着到现在为止的全部内容，原对话不动。写下接着要做的：')
+        : first ? t('这是第一条消息：分支会是同一个文件夹里的新对话。改好再发：') : t('新对话保留这条消息之前的内容，原对话不动。改好这条再发：')),
+      ta, sendBtn));
+    setTimeout(() => ta.focus(), 50);
+  }
+
   function openMenu(C) {
     const s = C.session;
     if (!s) return;
@@ -1403,6 +1491,7 @@
     let close = null;
     close = sheet(h('div', null,
       h('button', { type: 'button', onclick: () => { close(); openPrefs(C, () => C.redraw?.()); } }, icon('cpu', 'sm'), t('模型和思考强度')),
+      h('button', { type: 'button', onclick: () => { close(); openBranch(C, null); } }, icon('git-branch', 'sm'), t('分支这个对话')),
       h('button', { type: 'button', onclick: async () => {
         let ok = false;
         try {

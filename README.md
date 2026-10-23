@@ -18,7 +18,8 @@ Duty Desk is a small server that runs next to Claude Code (and Codex, if you hav
 - **A notification when a turn ends** while you're away, through [ntfy](https://ntfy.sh). It says that something finished and how long it took. The conversation's title is left out unless you allow it.
 - **Light and dark**, both drawn by hand, following the phone. A theme is a folder of colours and drawings, so you can add your own.
 - **English and Chinese.** Each phone picks its own.
-- **Codex too.** If the Codex CLI is installed, the conversations of the Codex app and the `codex` CLI show in the same list, marked Codex, with a switch to see one kind at a time. Carry them on or start new ones with Codex's own models and efforts; replies stream in word by word; a turn running in the Codex app on the computer shows on the phone as it happens. See [Codex](#codex).
+- **Branch a conversation.** Start a new conversation from any of your messages: it keeps what came before, you edit the message and send it, and the original stays as it was. Or branch the whole conversation and go a different way. Works for Claude Code and Codex.
+- **Codex too.** If the Codex CLI is installed, the conversations of the Codex app and the `codex` CLI show in the same list, marked Codex, with a switch to see one kind at a time. Carry them on or start new ones with Codex's own models and efforts; replies stream in word by word; a turn running in the Codex app on the computer shows on the phone as it happens, and a conversation the Codex app has open carries on in a branch. See [Codex](#codex).
 - **Suggestions from your own scripts.** A watcher or build bot on the computer can write a JSON file of things worth starting; they show at the top of the desk and start with one tap. See [Suggestions](#suggestions).
 - **No app store.** It installs to the home screen on iPhone and Android.
 
@@ -110,8 +111,19 @@ When the Codex CLI is on the computer, Duty Desk talks to it through Codex's own
 
 - The list, the history and the models come from Codex itself; the last prompt and reply on each card come from the conversation's rollout file. Thinking summaries fold into the steps.
 - New conversations start in a folder you pick, with the model and effort you pick; the defaults are Codex's own `config.toml`.
-- Codex lets one program at a time write a conversation. So the phone holds a conversation only while its turn runs and lets go a few seconds after, and you can open it in the Codex app or the CLI right away. If the Codex app has it open, the phone says so instead of sending.
-- A turn running on the computer is followed from the rollout file, so it shows on the phone as it happens, and the phone holds its own messages until that turn ends.
+- A turn running on the computer is followed from the rollout file, read the moment it changes, so it shows on the phone as it happens, and the phone holds its own messages until that turn ends.
+- Codex lets one program at a time write a conversation, and the Codex app keeps every conversation it has shown loaded, for hours after you leave it. Duty Desk watches Codex's own lock files (`CODEX_HOME/thread-writer-locks`), so the phone shows at once whether the Codex app has a conversation open. While it does, what you send goes to a new branch: Codex's own fork, which carries the history, appears in the Codex app's list and leaves the original untouched. When the computer lets go, the phone writes the same conversation again.
+- The phone holds a conversation only while its turn runs and lets go a few seconds after, leaving no lock behind, so the Codex app or the CLI can open it right away and finds what the phone wrote.
+- The lock is read directly on Windows. Elsewhere Codex's lock cannot be read from outside, so the phone learns a conversation is held when Codex turns its message away, and the next one goes to a branch.
+
+## Branches
+
+Every message you sent has a branch button. A branch from a message is a new conversation with everything before that message; the message is ready to edit, and sending it starts the branch. The menu's **Branch this conversation** keeps all of it. The original conversation stays as it was, and the branch says where it came from.
+
+- Claude Code: `claude --resume <id> --fork-session`, cut at the message with `--resume-session-at`.
+- Codex: `thread/fork` through the turn before the message. It reads the history without taking the conversation, so it works while the Codex app has it open.
+- A branch from the very first message has nothing to keep: it is a new conversation in the same folder.
+- A branch is created when you send its first message, so trying it out leaves nothing behind.
 
 ## How it works
 
@@ -157,9 +169,10 @@ A theme is a folder in `public/themes/<id>/`. Its `theme.json` holds the colours
 
 ## Development
 
-- `npm test`: 78 end-to-end checks against a fake Claude Code that writes real transcript files, 29 against a fake Codex app server that keeps real rollout files (no usage spent either way), then a check that every string on screen has an English entry.
+- `npm test`: 89 end-to-end checks against a fake Claude Code that writes real transcript files, 45 against a fake Codex app server that keeps real rollout files and locks (no usage spent either way), then a check that every string on screen has an English entry.
+- `npm run test:codex-real`: 24 checks with the real Codex CLI in a throwaway `CODEX_HOME`, a local stand-in for the model (no account, no usage) and a second Codex app server playing the Codex app: live turns, held conversations, branches, and handing a conversation back and forth. Skipped when Codex is not installed.
 - `node test/real.mjs`: a short run with the real Claude Code (Haiku, low effort, a temporary folder).
-- `node test/shots.mjs --lang en`: screenshots of every screen at phone and desktop size (needs Playwright with WebKit).
+- `node test/shots.mjs --lang en`: screenshots of every screen at phone and desktop size, on made-up conversations (a fake Codex in a throwaway folder, never your own); needs Playwright with WebKit.
 
 ## License
 

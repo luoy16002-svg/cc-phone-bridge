@@ -206,6 +206,20 @@ html.phone #app {
 .pcnote .i { color: var(--accent); margin-top: 3px; }
 .pcnote .dot { margin-top: 7px; }
 
+/* ---------------------------------------------------------------- branches */
+.fromline { display: flex; gap: 8px; align-items: center; width: calc(100% - var(--edge) - var(--edge-r)); margin: 8px var(--edge-r) 0 var(--edge); padding: 6px 2px; border: 0; background: none; font-size: 14px; color: var(--muted); text-align: left; }
+.fromline span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fromline .i { color: var(--accent); flex: none; }
+.u .ft .br { margin: -8px auto -8px -11px; padding: 8px 11px; border: 0; background: none; color: var(--muted); display: inline-grid; place-items: center; }
+.u .ft .br .i { width: 15px; height: 15px; }
+.u .ft .br:active { color: var(--accent); }
+.send.branch { color: var(--accent); }
+.menu:has(.branch) { width: min(440px, calc(100vw - 28px)); }
+.branch { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; padding: 8px 14px 12px; }
+.branch h2 { font-size: 15.5px; margin: 4px 0 0; font-weight: 400; color: var(--accent); }
+.branch p { margin: 0; font-size: 14.5px; line-height: 1.6; color: var(--ink-2); }
+.branch textarea { min-height: 112px; max-height: 36vh; resize: none; font-size: 16.5px; line-height: 1.5; }
+
 /* ---------------------------------------------------------------- composer */
 .composer { padding: 6px var(--edge-r) calc(8px + env(safe-area-inset-bottom)) calc(var(--edge) - 6px); }
 .composer .row { display: grid; grid-template-columns: 40px 1fr auto; gap: 6px; align-items: end; }

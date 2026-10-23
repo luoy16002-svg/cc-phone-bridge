@@ -16,8 +16,8 @@ import { Store } from './lib/store.mjs';
 import { Pairing, newDevice, findDevice } from './lib/pair.mjs';
 import { Runner, claudeCommand, detectVersion, killTree, MODELS, EFFORTS, modelName, defaults } from './lib/claude.mjs';
 import { isLoopback, isPrivate, hostAllowed, addresses } from './lib/net.mjs';
-import { configDir, projectKey, listSessions, sessionFile, sessionMeta, historyPage, lineEvents, preview } from './lib/transcripts.mjs';
-import { CodexHub, CodexRunner, rolloutInfo, rolloutLineEvents, rolloutId, codexHome, findRollout } from './lib/codex.mjs';
+import { configDir, projectKey, listSessions, sessionFile, sessionMeta, historyPage, lineEvents, preview, parentOf } from './lib/transcripts.mjs';
+import { CodexHub, CodexRunner, rolloutInfo, rolloutLineEvents, rolloutId, codexHome, findRollout, threadLock, lockDir } from './lib/codex.mjs';
 import { push, hasPush } from './lib/push.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -205,19 +205,48 @@ function codexPcBusy(meta, info) {
   return !!(info?.busy && Date.now() - info.mtime < 15 * 60000);
 }
 
+// Who writes a Codex thread right now: the phone (a turn of its own, or the moment after one), a program on the
+// computer (the Codex app, the codex CLI), nobody, or 'unknown' where the lock cannot be read. Where it cannot be
+// read beforehand, a refusal Codex gave the phone counts until the lock file goes.
+const conflicts = new Set();
+function codexLock(id) {
+  const r = runners.get(id);
+  if (r?.agent === 'codex' && (r.proc || r.state === 'running')) return 'phone';
+  const s = threadLock(id);
+  if (s === 'free') conflicts.delete(id);
+  return s === 'held' || (s === 'unknown' && conflicts.has(id)) ? 'pc' : s;
+}
+
 function codexSummary(meta) {
   const r = runners.get(meta.id);
   const info = meta.path ? rolloutInfo(meta.path) : null;
   const eff = codexEffective(meta.id, meta);
   const running = r?.state === 'running';
+  const held = codexLock(meta.id) === 'pc';
   return {
     agent: 'codex', id: meta.id, title: clip(meta.name || meta.preview || info?.lastPrompt || '', 80), cwd: meta.cwd, folder: folderOf(meta.cwd),
     lastPrompt: clip(info?.lastPrompt || meta.preview, 160), lastReply: clip(preview(info?.lastReply || ''), 200),
     lastModel: hub.modelName(info?.model || meta.model || ''),
     updatedAt: Math.max(meta.updatedAt || 0, info?.mtime || 0, running ? Date.now() : 0),
     model: eff.model, modelName: hub.modelName(eff.model), effort: eff.effort,
-    state: r?.state || 'idle', queue: r?.queue.length || 0, openOnPc: false, pcBusy: !running && codexPcBusy(meta, info),
+    state: r?.state || 'idle', queue: r?.queue.length || 0, openOnPc: held, held, pcBusy: !running && codexPcBusy(meta, info),
   };
+}
+
+// What the phone shows about the computer's side of a Codex thread: a turn running there, or the thread held open.
+function codexPc(id) {
+  const r = runners.get(id);
+  return { k: 'pc', open: false, busy: r?.state === 'running' ? false : !!tails.get(id)?.busy, held: codexLock(id) === 'pc' };
+}
+
+// The conversation a branch came from, with its title, for the line at the top of the branch.
+async function branchOrigin(id, forkedFrom = '') {
+  const src = store.prefs[id]?.from || forkedFrom;
+  if (!src) return null;
+  const claude = metaFor(src);
+  if (claude) return { id: src, title: claude.title };
+  const cm = hub.available ? await hub.lookup(src) : null;
+  return { id: src, title: cm ? clip(cm.name || cm.preview, 80) : '' };
 }
 
 // Which agent a session id belongs to: a Claude Code transcript, or a Codex thread.
@@ -390,12 +419,26 @@ function pollCodexTail(id, t) {
   for (const ev of evs) broadcast(id, 'ev', { ...ev, pc: true });
   if (busy !== t.busy) {                                // after the events, so a reload on "done" finds them
     t.busy = busy;
-    broadcast(id, 'tr', { k: 'pc', open: false, busy });
+    broadcast(id, 'tr', codexPc(id));
     deskUpdate(id);
   }
 }
 
-// The desk follows Codex threads too: a rollout file written anywhere under CODEX_HOME/sessions updates its card.
+// A followed file that changes is read at once; the timer in startTail / startCodexTail is the fallback.
+const soon = new Map();
+function pollSoon(id) {
+  if (soon.has(id)) return;
+  soon.set(id, setTimeout(() => {
+    soon.delete(id);
+    const t = tails.get(id);
+    if (!t) return;
+    if (t.agent === 'codex') pollCodexTail(id, t);
+    else pollTail(id, t);
+  }, 80));
+}
+
+// The desk follows Codex threads too: a rollout file written anywhere under CODEX_HOME/sessions updates its card,
+// and an open conversation reads what was written at once.
 function watchCodex() {
   if (!hub.available) return;
   const root = path.join(codexHome(), 'sessions');
@@ -404,7 +447,9 @@ function watchCodex() {
     const seen = new Map();
     fs.watch(root, { recursive: true }, (_, name) => {
       const id = rolloutId(name);
-      if (!id || !deskSubs.size) return;
+      if (!id) return;
+      if (tails.has(id)) pollSoon(id);
+      if (!deskSubs.size) return;
       const last = seen.get(id) || 0;
       if (Date.now() - last < 1500) return;
       seen.set(id, Date.now());
@@ -412,6 +457,39 @@ function watchCodex() {
     });
   } catch (e) {
     log(`watching ${root} failed (${e.message}); Codex cards refresh with the list`);
+  }
+}
+
+// The computer opening or letting go of a Codex thread shows on the phone at once: Codex creates
+// CODEX_HOME/thread-writer-locks/<id>.lock when a program loads a thread to write it, and deletes it after.
+const lockSeen = new Map();
+function lockChanged(id) {
+  const now = codexLock(id);
+  if (lockSeen.get(id) === now) return;
+  lockSeen.set(id, now);
+  if (lockSeen.size > 2000) lockSeen.delete(lockSeen.keys().next().value);
+  if (subs.get(id)?.size) broadcast(id, 'tr', codexPc(id));
+  deskUpdate(id);
+}
+
+function watchCodexLocks() {
+  if (!hub.available) return;
+  const dir = lockDir();
+  const timers = new Map();
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.watch(dir, (_, name) => {
+      const m = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.lock$/i.exec(String(name || ''));
+      if (!m) return;
+      const id = m[1].toLowerCase();
+      clearTimeout(timers.get(id));
+      timers.set(id, setTimeout(() => {
+        timers.delete(id);
+        lockChanged(id);
+      }, 120));
+    });
+  } catch (e) {
+    log(`watching ${dir} failed (${e.message}); the phone sees who holds a Codex thread when it opens it`);
   }
 }
 
@@ -423,7 +501,9 @@ function watchProjects() {
     fs.mkdirSync(root, { recursive: true });
     fs.watch(root, { recursive: true }, (_, name) => {
       const m = /([0-9a-f-]{36})\.jsonl$/i.exec(String(name || ''));
-      if (m && !String(name).includes(`${path.sep}subagents`)) deskUpdate(m[1]);
+      if (!m || String(name).includes(`${path.sep}subagents`)) return;
+      if (tails.has(m[1])) pollSoon(m[1]);
+      deskUpdate(m[1]);
     });
   } catch (e) {
     log(`watching ${root} failed (${e.message}); the list refreshes on its own timer`);
@@ -482,12 +562,20 @@ function wire(r) {
     deskUpdate(r.id);
   });
   r.on('pid', savePids);
-  r.on('exit', savePids);
+  r.on('exit', () => {
+    savePids();
+    if (r.agent === 'codex' && r.id) setTimeout(() => lockChanged(r.id), 150);   // the phone let go of the thread
+  });
+  r.on('conflict', () => {
+    if (!r.id) return;
+    conflicts.add(r.id);
+    setTimeout(() => lockChanged(r.id), 150);
+  });
   r.on('init', (id) => {
     runners.set(id, r);
-    store.prefs[id] = { model: r.model, effort: r.effort };
+    store.prefs[id] = { model: r.model, effort: r.effort, ...(r.from ? { from: r.from } : {}) };
     store.savePrefs();
-    log(`new session ${id}`);
+    log(`new session ${id}${r.from ? ` (a branch of ${r.from})` : ''}`);
   });
   r.on('finished', (ev) => {
     const t = r.id && tails.get(r.id);
@@ -852,6 +940,23 @@ async function codexChoice(b, meta) {
   return { model, effort };
 }
 
+// A runner without an id gets one with its first message: wait for it (or for the start to fail).
+function startRunner(r, content, shown) {
+  wire(r);
+  ensureCapacity(r);
+  return new Promise((resolve) => {
+    let timer = null;
+    const done = (v) => { clearTimeout(timer); resolve(v); };
+    timer = setTimeout(() => done({ error: 'timeout' }), 60000);
+    r.once('init', (id) => done({ id }));
+    r.once('failed', () => done({ error: 'failed' }));
+    r.once('finished', (ev) => { if (!r.id) done({ error: ev.reason || 'failed' }); });
+    r.enqueue(content, shown);
+  });
+}
+
+const codexContent = (text, names) => ({ text: text || (LANG === 'zh' ? '（见图）' : '(see the picture)'), images: uploadPaths(names) });
+
 async function newCodexSession(res, b, cwd) {
   if (!hub.available) return json(res, 400, { error: 'codex_unavailable' });
   const { model, effort } = await codexChoice(b, null);
@@ -859,22 +964,68 @@ async function newCodexSession(res, b, cwd) {
   const { names } = takeImages(b.images);
   if (!text && !names.length) return json(res, 400, { error: 'empty' });
   const r = new CodexRunner({ id: null, cwd, model, effort, phoneNote: store.settings.phoneNote, idleMinutes: CONFIG.limits.idleMinutes }, hub, log);
-  wire(r);
-  ensureCapacity(r);
-  const started = await new Promise((resolve) => {
-    let timer = null;
-    const done = (v) => { clearTimeout(timer); resolve(v); };
-    timer = setTimeout(() => done({ error: 'timeout' }), 60000);
-    r.once('init', (id) => done({ id }));
-    r.once('failed', () => done({ error: 'failed' }));
-    r.once('finished', (ev) => { if (!r.id) done({ error: ev.reason || 'failed' }); });
-    r.enqueue({ text: text || (LANG === 'zh' ? '（见图）' : '(see the picture)'), images: uploadPaths(names) }, { text, images: names });
-  });
+  const started = await startRunner(r, codexContent(text, names), { text, images: names });
   if (started.error) {
     log(`a new Codex thread failed to start: ${started.error}`);
     return json(res, 502, { error: started.error, detail: r.notes.map((n) => n.text).join('\n') });
   }
   return json(res, 200, { id: started.id, agent: 'codex' });
+}
+
+// ---------------------------------------------------------------- branches
+// A branch is a new conversation that keeps this one up to a point, and goes on with the message sent now: all of
+// it (b.turn and b.at empty), or what came before one of its messages (Codex: b.turn, the turn that message opened;
+// Claude Code: b.at, the message's id). The conversation it came from stays as it was. When the chosen message was
+// the first one, nothing is kept: the branch is a new conversation in the same folder.
+async function branchFrom(req, res, id, agent, meta) {
+  const b = await readBody(req);
+  const text = String(b.text || '').slice(0, 20000).trim();
+  const { names, blocks } = takeImages(b.images);
+  if (!text && !names.length) return json(res, 400, { error: 'empty' });
+  if (!fs.existsSync(meta.cwd)) return json(res, 400, { error: 'no_such_dir', cwd: meta.cwd });
+  const title = clip(agent === 'codex' ? meta.name || meta.preview : meta.title, 50);
+  const name = title ? (LANG === 'zh' ? `分支 · ${title}` : `Branch · ${title}`) : '';
+  const common = { id: null, cwd: meta.cwd, phoneNote: store.settings.phoneNote, idleMinutes: CONFIG.limits.idleMinutes, name };
+  let r;
+  let content;
+  if (agent === 'codex') {
+    let through = null;
+    try {
+      const turns = await hub.turnList(id);
+      if (b.turn) {
+        const i = turns.findIndex((x) => x.id === b.turn);
+        if (i < 0) return json(res, 400, { error: 'bad_turn' });
+        through = turns[i + 1]?.id || null;                  // newest first: the next one is the turn before
+      } else {
+        through = turns.find((x) => !/progress/i.test(x.status))?.id || null;
+      }
+    } catch (e) {
+      return json(res, 502, { error: 'codex', detail: e.message });
+    }
+    const { model, effort } = await codexChoice(b, meta);
+    r = new CodexRunner({ ...common, model, effort, fork: through ? { from: id, through } : null }, hub, log);
+    content = codexContent(text, names);
+  } else {
+    let at = '';
+    if (b.at) {
+      const file = sessionFile(id);
+      const parent = file ? await parentOf(file, String(b.at)) : undefined;
+      if (parent === undefined) return json(res, 400, { error: 'bad_message' });
+      at = parent;
+    }
+    const cur = effective(id);
+    const model = MODELS.some((x) => x.id === b.model) ? b.model : cur.model;
+    const effort = EFFORTS.includes(b.effort) ? b.effort : cur.effort;
+    r = new Runner({ ...common, model, effort, fork: b.at && !at ? null : { from: id, at } }, log);
+    content = messageContent(text, blocks);
+  }
+  r.from = id;
+  const started = await startRunner(r, content, { text, images: names });
+  if (started.error) {
+    log(`a branch of ${id} failed to start: ${started.error}`);
+    return json(res, 502, { error: started.error, detail: r.notes.map((n) => n.text).join('\n') });
+  }
+  return json(res, 200, { id: started.id, agent, from: id });
 }
 
 async function handleCodexSession(req, res, url, id, sub) {
@@ -893,11 +1044,12 @@ async function handleCodexSession(req, res, url, id, sub) {
     } catch (e) {
       log(`codex history ${id}: ${e.message}`);
     }
+    meta = (await hub.refresh(id)) || meta;                 // the list leaves out what a thread was forked from
     const r = runners.get(id);
     const since = page.events.length ? page.events[0].t : 0;
     const notes = r ? r.notes.filter((n) => n.t >= since && !r.live.includes(n)) : [];
     const events = [...page.events, ...notes].sort((a, b) => (a.t || 0) - (b.t || 0));
-    return json(res, 200, { session: codexSummary(meta), events, cursor: page.cursor, hasMore: page.hasMore });
+    return json(res, 200, { session: { ...codexSummary(meta), from: await branchOrigin(id, meta.forkedFrom) }, events, cursor: page.cursor, hasMore: page.hasMore });
   }
   if (method === 'GET' && sub === '/history') {
     const before = url.searchParams.get('before');
@@ -913,7 +1065,8 @@ async function handleCodexSession(req, res, url, id, sub) {
     const r = runners.get(id);
     startCodexTail(id, meta);
     sse(res, 'tr', { k: 'state', state: r?.state || 'idle', queue: r?.queue.length || 0 });
-    sse(res, 'tr', { k: 'pc', open: false, busy: r?.state === 'running' ? false : !!tails.get(id)?.busy });
+    sse(res, 'tr', codexPc(id));
+    lockSeen.set(id, codexLock(id));
     if (r) {
       for (const ev of r.live) sse(res, 'ev', ev);
       if (r.state === 'running') sse(res, 'tr', { k: 'live', text: r.liveText || '', activity: r.activity || null, since: r.turn?.start || Date.now() });
@@ -934,11 +1087,14 @@ async function handleCodexSession(req, res, url, id, sub) {
     if (!fs.existsSync(meta.cwd)) return json(res, 400, { error: 'no_such_dir', cwd: meta.cwd });
     const r = runnerFor(id, meta, 'codex');
     if (r.state !== 'running' && tails.get(id)?.busy) return json(res, 409, { error: 'pc_busy' });
+    // the Codex app has the thread open: only it can write the thread now, so the phone goes on in a branch
+    if (codexLock(id) === 'pc') return json(res, 409, { error: 'pc_holds' });
     if (!r.proc) ensureCapacity(r);
     const out = r.enqueue({ text: text || (LANG === 'zh' ? '（见图）' : '(see the picture)'), images: uploadPaths(names) }, { text, images: names });
     deskUpdate(id);
     return json(res, 200, out);
   }
+  if (method === 'POST' && sub === '/fork') return branchFrom(req, res, id, 'codex', meta);
   if (method === 'POST' && sub === '/interrupt') {
     const r = runners.get(id);
     return json(res, 200, { ok: r ? r.interrupt() : false });
@@ -946,7 +1102,7 @@ async function handleCodexSession(req, res, url, id, sub) {
   if (method === 'PUT' && sub === '/prefs') {
     const b = await readBody(req);
     const next = await codexChoice(b, meta);
-    store.prefs[id] = next;
+    store.prefs[id] = { ...store.prefs[id], ...next };
     store.savePrefs();
     const r = runners.get(id);
     if (r) {
@@ -1089,17 +1245,7 @@ async function handleApi(req, res, url, ip) {
     const { names, blocks } = takeImages(b.images);
     if (!text && !names.length) return json(res, 400, { error: 'empty' });
     const r = new Runner({ id: null, cwd, model, effort, phoneNote: store.settings.phoneNote, idleMinutes: CONFIG.limits.idleMinutes }, log);
-    wire(r);
-    ensureCapacity(r);
-    const started = await new Promise((resolve) => {
-      let timer = null;
-      const done = (v) => { clearTimeout(timer); resolve(v); };
-      timer = setTimeout(() => done({ error: 'timeout' }), 60000);
-      r.once('init', (id) => done({ id }));
-      r.once('failed', () => done({ error: 'failed' }));
-      r.once('finished', (ev) => { if (!r.id) done({ error: ev.reason || 'failed' }); });
-      r.enqueue(messageContent(text, blocks), { text, images: names });
-    });
+    const started = await startRunner(r, messageContent(text, blocks), { text, images: names });
     if (started.error) {
       const why = r.notes.map((n) => n.text).join('\n');
       log(`a new session failed to start: ${started.error}`);
@@ -1123,7 +1269,7 @@ async function handleApi(req, res, url, ip) {
     const since = page.events.length ? page.events[0].t : 0;
     const notes = r ? r.notes.filter((n) => n.t >= since && !r.live.includes(n)) : [];
     const events = [...page.events, ...notes].sort((a, b) => (a.t || 0) - (b.t || 0));
-    return json(res, 200, { session: summary(meta), events, cursor: page.cursor, hasMore: page.hasMore });
+    return json(res, 200, { session: { ...summary(meta), from: await branchOrigin(id) }, events, cursor: page.cursor, hasMore: page.hasMore });
   }
   if (method === 'GET' && sub === '/history') {
     const before = Number(url.searchParams.get('before'));
@@ -1161,6 +1307,7 @@ async function handleApi(req, res, url, ip) {
     deskUpdate(id);
     return json(res, 200, out);
   }
+  if (method === 'POST' && sub === '/fork') return branchFrom(req, res, id, 'claude', meta);
   if (method === 'POST' && sub === '/interrupt') {
     const r = runners.get(id);
     return json(res, 200, { ok: r ? r.interrupt() : false });
@@ -1169,7 +1316,7 @@ async function handleApi(req, res, url, ip) {
     const b = await readBody(req);
     const cur = effective(id);
     const next = { model: MODELS.some((x) => x.id === b.model) ? b.model : cur.model, effort: EFFORTS.includes(b.effort) ? b.effort : cur.effort };
-    store.prefs[id] = next;
+    store.prefs[id] = { ...store.prefs[id], ...next };
     store.savePrefs();
     const r = runners.get(id);
     if (r && (r.model !== next.model || r.effort !== next.effort)) {
@@ -1245,6 +1392,7 @@ cleanUploads();
 setInterval(cleanUploads, 6 * 3600 * 1000).unref();
 watchProjects();
 watchCodex();
+watchCodexLocks();
 server.listen(CONFIG.port, CONFIG.host, () => {
   const where = addresses().map((a) => `${TLS ? 'https' : 'http'}://${a.address}:${CONFIG.port}/`).join('  ');
   log(`cc-phone-bridge ${VERSION} on ${CONFIG.port} (${where}); data ${DATA_DIR}; config ${fs.existsSync(CONFIG_FILE) ? CONFIG_FILE : 'defaults'}; sessions ${configDir()}`);

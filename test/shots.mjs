@@ -1,5 +1,6 @@
 // Screenshots of every screen at phone and desktop size, in each theme, on conversations seeded as Claude Code
-// transcripts. Usage: node test/shots.mjs [outdir] [--lang zh|en]
+// transcripts and Codex threads (the fake Codex in a throwaway CODEX_HOME: never this computer's own conversations).
+// Usage: node test/shots.mjs [outdir] [--lang zh|en]
 // Needs Playwright with WebKit (npm i -D playwright && npx playwright install webkit), or PLAYWRIGHT_PATH set to a copy.
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
@@ -22,11 +23,13 @@ const BASE = `http://127.0.0.1:${PORT}`;
 const DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'ccpb-shots-'));
 const CONF = fs.mkdtempSync(path.join(os.tmpdir(), 'ccpb-shots-conf-'));
 const PROJ = fs.mkdtempSync(path.join(os.tmpdir(), 'ccpb-shots-proj-'));
+const CXHOME = fs.mkdtempSync(path.join(os.tmpdir(), 'ccpb-shots-codex-'));
 const ROOTDIR = path.join(PROJ, 'Projects');
 for (const d of ['notes-app', 'english', 'blog', 'cafe-site', 'photo-tools', 'scripts']) fs.mkdirSync(path.join(ROOTDIR, d), { recursive: true });
 fs.mkdirSync(OUT, { recursive: true });
 const SUGG = path.join(DATA, 'suggestions.json');
-fs.writeFileSync(path.join(DATA, 'config.json'), JSON.stringify({ roots: [ROOTDIR], timeZone: 'America/Los_Angeles', lang: LANG, suggestions: { file: SUGG } }));
+fs.writeFileSync(path.join(DATA, 'config.json'), JSON.stringify({ roots: [ROOTDIR], timeZone: 'America/Los_Angeles', lang: LANG, suggestions: { file: SUGG }, codex: { home: CXHOME } }));
+fs.writeFileSync(path.join(CXHOME, 'config.toml'), 'model = "fake-sol"\nmodel_reasoning_effort = "medium"\n');
 fs.writeFileSync(path.join(DATA, 'settings.json'), JSON.stringify({ pushOnFinish: true }));
 fs.writeFileSync(path.join(CONF, 'settings.json'), JSON.stringify({ model: 'opus', modelSettings: { 'claude-opus-5-5': { effortLevel: 'xhigh' } } }));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -47,6 +50,9 @@ const W = {
     more: '把第四课的例句也做成卡片，顺便检查一遍拼写', moreReply: '先读了第四课，找到 12 个例句，正在逐条做卡片。',
     slow: '跑一遍 slow 的全量测试，跑完告诉我结果', also: '另外看一下日志里有没有警告',
     other: '别的文件夹', newBtn: '新建', moreLabel: '更多', folder: 'english-cards',
+    cxAsk: '把批量缩图改成多线程，200 张图要在 15 秒内做完', cxCmd: 'python resize.py --threads 4 samples/', cxReply: '改好了：4 个线程，200 张图从 38 秒降到 11 秒，输出和原来逐字节一致。',
+    cxAsk2: '再加一个 --quality 参数，默认 85', cxReply2: '加好了，`--quality` 默认 85，README 也写上了。',
+    branchLabel: '从这里分支', branchAsk: '把批量缩图改成多进程，和多线程比一比',
   },
   en: {
     sugTitle: 'cafe-site nightly build failed: the menu page image check', sugDetail: 'Build bot · 3 images over 400 KB',
@@ -61,6 +67,9 @@ const W = {
     more: 'Make cards from the lesson 4 example sentences too, and check the spelling', moreReply: 'Read lesson 4 and found 12 example sentences; making the cards one by one.',
     slow: 'Run the full slow test suite and tell me the result', also: 'Also check the log for warnings',
     other: 'Another folder', newBtn: 'New', moreLabel: 'More', folder: 'flash-cards',
+    cxAsk: 'Make the batch resize multi-threaded: 200 pictures in under 15 seconds', cxCmd: 'python resize.py --threads 4 samples/', cxReply: 'Done: 4 threads, 200 pictures now take 11 s instead of 38 s, and the output is byte-for-byte the same.',
+    cxAsk2: 'Add a --quality option, 85 by default', cxReply2: 'Added: `--quality`, 85 by default, and the README says so.',
+    branchLabel: 'Branch from here', branchAsk: 'Try processes instead of threads for the batch resize, and compare the two',
   },
 }[LANG];
 
@@ -114,9 +123,49 @@ fs.writeFileSync(path.join(CONF, 'sessions', `${process.pid}.json`), JSON.string
 fs.writeFileSync(path.join(CONF, 'sessions', `${process.ppid}.json`), JSON.stringify({ pid: process.ppid, sessionId: B, cwd: path.join(ROOTDIR, 'english'), kind: 'interactive', status: 'busy' }));
 for (const d of ['api', 'web', 'docs']) fs.mkdirSync(path.join(X, d));
 
+// A Codex thread "on the computer", in the fake Codex's own files (an index and a rollout).
+function codexThread(cwd, minutesAgo, turns) {
+  const id = crypto.randomUUID();
+  const day = new Date(now).toISOString().slice(0, 10).split('-');
+  const dir = path.join(CXHOME, 'sessions', ...day);
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, `rollout-${new Date(now).toISOString().slice(0, 19).replace(/:/g, '-')}-${id}.jsonl`);
+  let t = now - minutesAgo * 60000 - turns.length * 120000;
+  const items = [];
+  const lines = [{ timestamp: new Date(t).toISOString(), type: 'session_meta', payload: { id, cwd } },
+    { timestamp: new Date(t).toISOString(), type: 'turn_context', payload: { model: 'fake-sol', collaboration_mode: { settings: { reasoning_effort: 'medium' } } } }];
+  for (const [n, turn] of turns.entries()) {
+    const turnId = `turn-${n + 1}`;
+    const at = () => { t += 7000; return t; };
+    const user = { type: 'userMessage', id: crypto.randomUUID(), content: [{ type: 'text', text: turn.user }] };
+    items.push({ turnId, item: user, startedAtMs: at(), completedAtMs: t });
+    if (turn.cmd) items.push({ turnId, item: { type: 'commandExecution', id: crypto.randomUUID(), command: turn.cmd, cwd, status: 'completed', exitCode: 0, aggregatedOutput: 'ok', commandActions: [] }, startedAtMs: at(), completedAtMs: at() });
+    items.push({ turnId, item: { type: 'agentMessage', id: crypto.randomUUID(), text: turn.reply }, startedAtMs: at(), completedAtMs: t });
+    lines.push({ timestamp: new Date(t).toISOString(), type: 'event_msg', payload: { type: 'task_started', turn_id: turnId } },
+      { timestamp: new Date(t).toISOString(), type: 'event_msg', payload: { type: 'item_completed', turn_id: turnId, item: { type: 'UserMessage', id: user.id, content: [{ type: 'text', text: turn.user }] } } },
+      { timestamp: new Date(t).toISOString(), type: 'event_msg', payload: { type: 'item_completed', turn_id: turnId, item: { type: 'AgentMessage', id: crypto.randomUUID(), content: [{ type: 'Text', text: turn.reply }] } } },
+      { timestamp: new Date(t).toISOString(), type: 'event_msg', payload: { type: 'task_complete', turn_id: turnId } });
+  }
+  fs.writeFileSync(file, `${lines.map((l) => JSON.stringify(l)).join('\n')}\n`);
+  const at = new Date(now - minutesAgo * 60000);
+  fs.utimesSync(file, at, at);
+  const index = path.join(CXHOME, 'fake-threads.json');
+  const all = fs.existsSync(index) ? JSON.parse(fs.readFileSync(index, 'utf8')) : {};
+  all[id] = { id, cwd, model: 'fake-sol', reasoningEffort: 'medium', preview: turns[0].user, name: '', createdAt: Math.floor((now - minutesAgo * 60000 - turns.length * 120000) / 1000), updatedAt: Math.floor(at.getTime() / 1000), path: file, items };
+  fs.writeFileSync(index, JSON.stringify(all));
+  return id;
+}
+const CX = codexThread(path.join(ROOTDIR, 'photo-tools'), 9, [{ user: W.cxAsk, cmd: W.cxCmd, reply: W.cxReply }, { user: W.cxAsk2, reply: W.cxReply2 }]);
+// The Codex app holds that thread open, as it does with every thread it has shown: an OS lock on Windows.
+const cxLock = path.join(CXHOME, 'thread-writer-locks', `${CX}.lock`);
+fs.mkdirSync(path.dirname(cxLock), { recursive: true });
+const cxFd = process.platform === 'win32' ? fs.openSync(cxLock, fs.constants.O_RDWR | fs.constants.O_CREAT | 0x10000000) : null;
+
 const server = spawn(process.execPath, [path.join(ROOT, 'server.mjs')], {
   cwd: ROOT,
-  env: { ...process.env, FAKE_LANG: LANG, CCPB_PORT: String(PORT), CCPB_DATA: DATA, CCPB_CONFIG_DIR: CONF, CCPB_SHOW_TEMP: '1', CCPB_CLAUDE_CMD: JSON.stringify([process.execPath, path.join(ROOT, 'test', 'fake-claude.mjs')]) },
+  env: { ...process.env, FAKE_LANG: LANG, CCPB_PORT: String(PORT), CCPB_DATA: DATA, CCPB_CONFIG_DIR: CONF, CCPB_SHOW_TEMP: '1', CODEX_HOME: CXHOME,
+    CCPB_CLAUDE_CMD: JSON.stringify([process.execPath, path.join(ROOT, 'test', 'fake-claude.mjs')]),
+    CCPB_CODEX_CMD: JSON.stringify([process.execPath, path.join(ROOT, 'test', 'fake-codex.mjs')]) },
   stdio: 'inherit',
 });
 for (let i = 0; i < 100; i++) {
@@ -130,23 +179,28 @@ const { token } = await (await fetch(`${BASE}/api/pair`, { method: 'POST', heade
 const api = (m, p, b) => fetch(BASE + p, { method: m, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: b ? JSON.stringify(b) : undefined }).then((r) => r.json());
 const live = await api('POST', '/api/sessions', { cwd: path.join(ROOTDIR, 'blog'), model: 'claude-opus-5-5', effort: 'high', text: W.slow });
 await api('POST', `/api/sessions/${live.id}/messages`, { text: W.also });
-await sleep(800);
+// a branch of the Codex thread, from its second message
+const cxEvents = (await api('GET', `/api/sessions/${CX}`)).events;
+const cxSecond = cxEvents.filter((e) => e.k === 'user')[1];
+const branch = await api('POST', `/api/sessions/${CX}/fork`, { turn: cxSecond.turn, text: W.branchAsk });
+await sleep(1500);
 
 // The pictures go into the README, so this computer's name and addresses are swapped for examples, QR code included.
 const SAMPLE_URL = 'http://192.168.1.20:8060';
 const qrFor = (color) => QRCode.toString(`${SAMPLE_URL}/#pair=482915`, { type: 'svg', margin: 1, errorCorrectionLevel: 'M', color });
 const sampleQr = { light: await qrFor({ dark: '#1d3550', light: '#00000000' }), dark: await qrFor({ dark: '#18222f', light: '#e3ecf6' }) };
 async function hidePrivate(page) {
-  await page.evaluate(([host, port]) => {
+  await page.evaluate(([host, port, proj, sample]) => {
     const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
     for (let n = walker.nextNode(); n; n = walker.nextNode()) {
       n.nodeValue = n.nodeValue
+        .split(proj).join(sample)
         .split(host).join('my-pc')
         .replace(/\b(?:192\.168|10\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01]))\.\d{1,3}\.\d{1,3}\b/g, '192.168.1.20')
         .replace(/\b100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}\b/g, '100.64.0.20')
         .split(`:${port}`).join(':8060');
     }
-  }, [os.hostname(), String(PORT)]);
+  }, [os.hostname(), String(PORT), PROJ, process.platform === 'win32' ? 'C:\\Users\\me' : '/home/me']);
 }
 
 const browser = await webkit.launch();
@@ -195,8 +249,17 @@ await shot('20-night-conversation', `/#/s/${A}`, { theme: 'night', act: openTool
 await shot('21-night-new', '/#/new', { theme: 'night', wait: 1200 });
 await shot('22-night-settings', '/#/settings', { theme: 'night' });
 await shot('23-night-pc-page', '/pc', { ctx: desk({ colorScheme: 'dark' }), tk: null });
+// branches
+await shot('24-codex-held', `/#/s/${CX}`, { wait: 1200 });
+const openBranchSheet = async (p) => { await p.click(`.u >> nth=0 >> button[aria-label="${W.branchLabel}"]`); await sleep(400); };
+await shot('25-branch-sheet', `/#/s/${A}`, { act: async (p) => { await p.click(`.u >> nth=1 >> button[aria-label="${W.branchLabel}"]`); await sleep(400); } });
+await shot('26-branched', `/#/s/${branch.id}`, { wait: 1500 });
+await shot('27-night-codex-held', `/#/s/${CX}`, { theme: 'night', wait: 1200 });
+await shot('28-desktop-branch-sheet', `/#/s/${CX}`, { ctx: desk(), act: openBranchSheet });
+await shot('29-small-phone-branch-sheet', `/#/s/${CX}`, { ctx: { ...phone, viewport: { width: 375, height: 667 } }, act: openBranchSheet });
 await browser.close();
 server.kill();
-await sleep(500);
-for (const d of [DATA, CONF, PROJ]) fs.rmSync(d, { recursive: true, force: true });
+if (cxFd !== null) fs.closeSync(cxFd);
+await sleep(800);
+for (const d of [DATA, CONF, PROJ, CXHOME]) fs.rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
 console.log('shots in', OUT);

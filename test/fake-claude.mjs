@@ -8,12 +8,26 @@ import readline from 'node:readline';
 const args = process.argv.slice(2);
 const at = (flag) => (args.includes(flag) ? args[args.indexOf(flag) + 1] : null);
 const resume = at('--resume');
+const forking = !!resume && args.includes('--fork-session');
 const model = at('--model') || 'claude-opus-5-5';
-const session = resume && !args.includes('--fork-session') ? resume : crypto.randomUUID();
+const session = resume && !forking ? resume : crypto.randomUUID();
 const dir = path.join(process.env.CLAUDE_CONFIG_DIR || '.', 'projects', process.cwd().replace(/[^a-zA-Z0-9]/g, '-'));
 fs.mkdirSync(dir, { recursive: true });
 const file = path.join(dir, `${session}.jsonl`);
 let parent = null;
+// a branch starts as a copy of the old session, up to and including the entry --resume-session-at names
+if (forking) {
+  const cut = at('--resume-session-at');
+  for (const l of fs.readFileSync(path.join(dir, `${resume}.jsonl`), 'utf8').split('\n')) {
+    if (!l.trim()) continue;
+    const o = JSON.parse(l);
+    if (o.sessionId) o.sessionId = session;
+    fs.appendFileSync(file, `${JSON.stringify(o)}\n`);
+    if (o.uuid) parent = o.uuid;
+    if (cut && o.uuid === cut) break;
+  }
+}
+if (at('--name') && !(resume && !forking)) fs.appendFileSync(file, `${JSON.stringify({ type: 'custom-title', customTitle: at('--name'), sessionId: session })}\n`);
 const out = (o) => process.stdout.write(`${JSON.stringify({ ...o, session_id: session })}\n`);
 const save = (o) => {
   const line = { parentUuid: parent, isSidechain: false, cwd: process.cwd(), sessionId: session, timestamp: new Date().toISOString(), ...o };
@@ -56,6 +70,9 @@ async function turn(msg) {
   const t0 = Date.now();
   const text = textOf(msg.message.content);
   const images = msg.message.content.filter((c) => c.type === 'image').length;
+  // what the conversation holds before this message, so a branch can show what it kept
+  const earlier = fs.existsSync(file) ? fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l))
+    .filter((o) => o.type === 'user' && Array.isArray(o.message?.content) && o.message.content[0]?.type === 'text').map((o) => o.message.content[0].text) : [];
   out({ type: 'system', subtype: 'init', model, cwd: process.cwd(), tools: [] });
   save({ type: 'user', uuid: crypto.randomUUID(), message: { role: 'user', content: msg.message.content.map((c) => (c.type === 'image' ? { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AA==' } } : c)) } });
   fs.appendFileSync(file, `${JSON.stringify({ type: 'last-prompt', lastPrompt: text, sessionId: session })}\n`);
@@ -83,7 +100,8 @@ async function turn(msg) {
     assistant([{ type: 'tool_use', id: 'tool-read', name: 'Read', input: { file_path: path.join(process.cwd(), 'README.md') } }]);
     toolResult('tool-read', [{ type: 'text', text: 'line one\nline two' }]);
   }
-  await streamText(images ? `got ${images} image` : `${process.env.FAKE_LANG === "en" ? "Got it: " : "收到："}${text}${args.includes('--effort') ? ` (${at('--effort')})` : ''}`);
+  if (/前面说过什么/.test(text)) await streamText(`说过：${earlier.join('｜') || '没有'}`);
+  else await streamText(images ? `got ${images} image` : `${process.env.FAKE_LANG === "en" ? "Got it: " : "收到："}${text}${args.includes('--effort') ? ` (${at('--effort')})` : ''}`);
   out({ type: 'rate_limit_event', rate_limit_info: { status: 'allowed' } });
   out({ type: 'result', subtype: 'success', is_error: false, duration_ms: Date.now() - t0, num_turns: 1, result: 'ok', terminal_reason: 'completed', total_cost_usd: 0.001 });
 }

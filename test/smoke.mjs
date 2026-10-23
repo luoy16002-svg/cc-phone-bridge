@@ -312,6 +312,44 @@ async function main() {
   check('its reply is in its history', nh.some((e) => e.k === 'text' && e.text === '收到：第一句话 (high)'));
   check('a bad folder is refused', (await api('POST', '/api/sessions', { cwd: path.join(PROJ, 'nope'), text: 'x' })).status === 400);
 
+  // branches: a new conversation with what came before a message (or all of it); the old one stays as it was
+  const L5 = listen(ns.data.id);
+  await api('POST', `/api/sessions/${ns.data.id}/messages`, { text: '第二句话' });
+  await L5.until((e) => e.k === 'text' && e.text === '收到：第二句话 (high)');
+  L5.stop();
+  await sleep(300);
+  const nh2 = (await api('GET', `/api/sessions/${ns.data.id}`)).data.events;
+  const firstMsg = nh2.find((e) => e.k === 'user' && e.text === '第一句话');
+  const second = nh2.find((e) => e.k === 'user' && e.text === '第二句话');
+  check('messages in the record carry their ids (a branch can start from one)', /^[0-9a-f-]{36}$/.test(second?.id || '') && /^[0-9a-f-]{36}$/.test(firstMsg?.id || ''), JSON.stringify([firstMsg, second]));
+  const replyOf = async (sid) => {
+    for (let i = 0; i < 80; i++) {
+      const r = await api('GET', `/api/sessions/${sid}`);
+      const hit = (r.data.events || []).find((e) => e.k === 'text' && /^说过：/.test(e.text));
+      if (hit) return { said: hit.text, events: r.data.events, session: r.data.session };
+      await sleep(100);
+    }
+    return { said: null, events: [], session: null };
+  };
+  const br = await api('POST', `/api/sessions/${ns.data.id}/fork`, { at: second.id, text: '前面说过什么' });
+  check('a branch from a message starts as a new conversation', br.status === 200 && /^[0-9a-f-]{36}$/.test(br.data.id || '') && br.data.id !== ns.data.id && br.data.from === ns.data.id, JSON.stringify(br.data));
+  const b1 = await replyOf(br.data.id);
+  check('the branch keeps what came before that message, and only that', b1.said === '说过：第一句话', b1.said);
+  check('its history has the first exchange and not the second', b1.events.some((e) => e.k === 'user' && e.text === '第一句话') && !b1.events.some((e) => e.k === 'user' && e.text === '第二句话'));
+  check('the branch says where it came from, and its title says it is a branch', b1.session?.from?.id === ns.data.id && b1.session.from.title === '第一句话' && /^(分支|Branch) · 第一句话$/.test(b1.session.title || ''), JSON.stringify(b1.session));
+  const oh = (await api('GET', `/api/sessions/${ns.data.id}`)).data.events;
+  check('the conversation it came from is untouched', oh.some((e) => e.k === 'user' && e.text === '第二句话') && !oh.some((e) => e.k === 'user' && e.text === '前面说过什么'));
+  const bw = await api('POST', `/api/sessions/${ns.data.id}/fork`, { text: '前面说过什么' });
+  const b2 = await replyOf(bw.data.id);
+  check('a branch of the whole conversation keeps all of it', bw.status === 200 && b2.said === '说过：第一句话｜第二句话', b2.said);
+  const bf = await api('POST', `/api/sessions/${ns.data.id}/fork`, { at: firstMsg.id, text: '前面说过什么' });
+  const b3 = await replyOf(bf.data.id);
+  check('a branch from the first message is a new conversation in the same folder', bf.status === 200 && b3.said === '说过：没有' && b3.session?.cwd === mk.data.path && b3.session?.from?.id === ns.data.id, JSON.stringify([b3.said, b3.session?.cwd]));
+  check('a message that is not in the record is refused', (await api('POST', `/api/sessions/${ns.data.id}/fork`, { at: crypto.randomUUID(), text: 'x' })).status === 400);
+  check('a branch needs something to send', (await api('POST', `/api/sessions/${ns.data.id}/fork`, { text: '  ' })).status === 400);
+  const pf2 = await api('PUT', `/api/sessions/${br.data.id}/prefs`, { model: 'claude-haiku-5-5', effort: 'low' });
+  check('changing a branch\'s model keeps where it came from', pf2.status === 200 && (await api('GET', `/api/sessions/${br.data.id}`)).data.session?.from?.id === ns.data.id);
+
   // suggestions written by another tool: shown when valid, gone when dismissed, never started by themselves
   const nowS = Math.floor(Date.now() / 1000);
   fs.writeFileSync(SUGG, JSON.stringify({ items: [

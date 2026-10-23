@@ -19,7 +19,7 @@ const ICONS = ['arrow-left', 'plus', 'settings', 'send-2', 'player-stop-filled',
   'info-circle', 'terminal-2', 'file-text', 'pencil', 'file-plus', 'search', 'world', 'list-check', 'subtask', 'tool',
   'chevron-down', 'chevron-right', 'lamp-2', 'plug-connected-x', 'refresh', 'device-mobile', 'folder', 'history',
   'archive', 'dots', 'arrow-down', 'copy', 'link', 'brain', 'clock', 'arrow-back-up', 'bolt', 'cpu', 'trash', 'device-desktop', 'folder-plus',
-  'folder-open', 'home'];
+  'folder-open', 'home', 'git-branch'];
 const symbols = ICONS.map((name) => {
   const file = path.join(NM, '@tabler/icons/icons/outline', `${name}.svg`);
   const filled = path.join(NM, '@tabler/icons/icons/filled', `${name.replace(/-filled$/, '')}.svg`);

@@ -250,10 +250,27 @@
     '没能交给 {agent}': "Couldn't hand it to {agent}",
     思考: 'Thinking',
     'Codex 默认用 {model} · {effort}，也和电脑上一样。': 'Codex defaults to {model} · {effort}, also as on the computer.',
-    '这个对话正在电脑上的 Codex 里开着，同一时间只能有一处接着写。先在电脑上关掉它，或等它空闲后再发': 'This conversation is open in Codex on the computer, and only one place can write to it at a time. Close it there, or wait until it is idle, then send.',
+    '电脑上的 Codex 刚好打开了这个对话，这条没发出去。再发一次，会从最新一轮分出一个新对话接着做': 'Codex on the computer opened this conversation just as the message went, so it was not sent. Send it again and it goes on in a new conversation branched from the latest turn.',
     '没能交给 Codex：{msg}': "Couldn't hand it to Codex: {msg}",
     'Codex 请求确认，手机上不能代答，已拒绝。要放行，请在电脑上改 Codex 的审批设置': "Codex asked for approval. The phone can't answer, so it was refused. To allow it, change Codex's approval setting on the computer.",
     'Codex 中途退出了': 'Codex quit partway',
+    '电脑上的 Codex 正开着这个对话，只有它能接着写。这里发出的消息会从最新一轮分出一个新对话，原对话不动。': 'Codex on the computer has this conversation open, and only it can write to it now. What you send here starts a new conversation branched from the latest turn; this one stays as it is.',
+    '在新分支里接着说…': 'Go on in a new branch…',
+    '电脑上开着这个对话，这条会发到新分支里': 'Open on the computer, so this goes to a new branch',
+
+    // branches
+    从这里分支: 'Branch from here',
+    从这条消息分支: 'Branch from this message',
+    分支这个对话: 'Branch this conversation',
+    '新对话保留这条消息之前的内容，原对话不动。改好这条再发：': 'The new conversation keeps everything before this message; this one stays as it is. Edit the message, then send it:',
+    '这是第一条消息：分支会是同一个文件夹里的新对话。改好再发：': 'This is the first message, so the branch is a new conversation in the same folder. Edit it, then send:',
+    '新对话带着到现在为止的全部内容，原对话不动。写下接着要做的：': 'The new conversation carries everything so far; this one stays as it is. Write what comes next:',
+    在新分支里发出: 'Send in a new branch',
+    '正在分支…': 'Branching…',
+    已在新分支里发出: 'Sent in a new branch',
+    没能分出新对话: "Couldn't start the branch",
+    '分支自「{title}」': 'Branched from “{title}”',
+    分支自另一个对话: 'Branched from another conversation',
   };
 
   const LANGS = { en: EN };

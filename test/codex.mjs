@@ -150,6 +150,7 @@ try {
   const one = await api('GET', `/api/sessions/${SEED}`);
   const kinds = (one.body.events || []).map((e) => e.k).join(',');
   check('history: prompt, thinking, tools and reply in order', kinds === 'user,think,tool,tool_result,tool,tool_result,text', kinds);
+  check('history: every event says which turn it belongs to', (one.body.events || []).every((e) => e.turn === 't1'));
   const edit = (one.body.events || []).find((e) => e.k === 'tool' && e.name === 'Edit');
   check('history: a file change reads as an edit of a path relative to the folder', edit?.summary === 'README.md', JSON.stringify(edit));
   check('history: session summary for Codex', one.body.session?.agent === 'codex' && one.body.session?.folder === 'demo');
@@ -167,12 +168,13 @@ try {
   check('new conversation: model and effort as chosen', s1.body.session?.model === 'fake-luna' && s1.body.session?.effort === 'high', JSON.stringify(s1.body.session));
 
   // the bridge lets go of the thread right after a turn
+  const lockFile = (tid) => path.join(HOME, 'thread-writer-locks', `${tid}.lock`);
   let freed = false;
   for (let i = 0; i < 80 && !freed; i++) {
-    freed = !fs.existsSync(path.join(HOME, `${id}.lock`));
+    freed = !fs.existsSync(lockFile(id));
     if (!freed) await sleep(100);
   }
-  check('the thread is let go after the turn (the computer can open it)', freed);
+  check('the thread is let go after the turn, lock file and all (the computer can open it)', freed);
 
   // two messages: the second waits for the first
   f = follow(id);
@@ -204,27 +206,75 @@ try {
   // a turn running on the computer: the phone follows the rollout and holds its own messages
   f = follow(SEED);
   await sleep(500);
-  fs.appendFileSync(SEED_FILE, line({ type: 'event_msg', payload: { type: 'task_started' } }));
+  const wrote = Date.now();
+  fs.appendFileSync(SEED_FILE, line({ type: 'event_msg', payload: { type: 'task_started', turn_id: 't2' } }));
   const busy = await f.until((x) => x.ev === 'tr' && x.d.k === 'pc' && x.d.busy, 8000);
   check('a turn on the computer shows as busy', !!busy);
+  check('and shows within a moment of being written (the file is watched)', !!busy && Date.now() - wrote < 1200, `${Date.now() - wrote} ms`);
   const held = await api('POST', `/api/sessions/${SEED}/messages`, { text: 'hello' });
   check('the phone does not write while the computer does', held.status === 409 && held.body.error === 'pc_busy', JSON.stringify(held));
-  fs.appendFileSync(SEED_FILE, line({ type: 'event_msg', payload: { type: 'item_completed', item: { type: 'AgentMessage', id: 'a2', content: [{ type: 'Text', text: 'Done on the computer.' }] } } })
-    + line({ type: 'event_msg', payload: { type: 'task_complete' } }));
+  fs.appendFileSync(SEED_FILE, line({ type: 'event_msg', payload: { type: 'item_completed', turn_id: 't2', item: { type: 'AgentMessage', id: 'a2', content: [{ type: 'Text', text: 'Done on the computer.' }] } } })
+    + line({ type: 'event_msg', payload: { type: 'task_complete', turn_id: 't2' } }));
   const pcText = await f.until((x) => x.ev === 'ev' && x.d.pc && x.d.k === 'text', 8000);
   const idle = await f.until((x) => x.ev === 'tr' && x.d.k === 'pc' && !x.d.busy && f.evs.indexOf(x) > f.evs.indexOf(busy), 8000);
   check('the computer\'s reply streams to the phone, then it is free', pcText?.d.text === 'Done on the computer.' && !!idle && f.evs.indexOf(pcText) < f.evs.indexOf(idle));
+  check('the computer\'s events carry their turn too', pcText?.d.turn === 't2');
   f.stop();
 
-  // a thread the computer holds open: a clear message, nothing lost
-  fs.writeFileSync(path.join(HOME, `${SEED}.lock`), String(process.pid));
-  f = follow(SEED);
-  await sleep(300);
-  const tried = await api('POST', `/api/sessions/${SEED}/messages`, { text: 'Reply with the single word: x' });
-  const warn = await f.until((x) => x.ev === 'ev' && x.d.k === 'note' && /电脑上的 Codex 里开着/.test(x.d.text), 8000);
-  check('a thread open on the computer is refused with a clear note', tried.status === 200 && !!warn, JSON.stringify(f.evs.map((x) => x.d.k)));
-  f.stop();
-  fs.unlinkSync(path.join(HOME, `${SEED}.lock`));
+  // The Codex app holds a thread open (as it does with any it has shown, for hours): the phone sees it at once, and
+  // what it sends goes on in a branch. Codex's lock is an OS lock, which the fake (and this test) take on Windows.
+  const replyOf = async (sid, re) => {
+    for (let i = 0; i < 100; i++) {
+      const r = await api('GET', `/api/sessions/${sid}`);
+      const hit = (r.body.events || []).find((e) => e.k === 'text' && re.test(e.text));
+      if (hit) return { said: hit.text, events: r.body.events, session: r.body.session };
+      await sleep(100);
+    }
+    return { said: null, events: [], session: null };
+  };
+  if (process.platform === 'win32') {
+    f = follow(SEED);
+    await sleep(400);
+    fs.mkdirSync(path.dirname(lockFile(SEED)), { recursive: true });
+    const fd = fs.openSync(lockFile(SEED), fs.constants.O_RDWR | fs.constants.O_CREAT | 0x10000000);
+    const heldEv = await f.until((x) => x.ev === 'tr' && x.d.k === 'pc' && x.d.held === true, 5000);
+    check('the computer opening a thread shows on the phone at once', !!heldEv, JSON.stringify(f.evs.filter((x) => x.d.k === 'pc').map((x) => x.d)));
+    const sh = await api('GET', `/api/sessions/${SEED}`);
+    check('the thread reads as held by the computer', sh.body.session?.held === true && sh.body.session?.openOnPc === true, JSON.stringify(sh.body.session));
+    check('and so it shows in the list', (await api('GET', '/api/sessions')).body.sessions.find((s) => s.id === SEED)?.held === true);
+    const refused = await api('POST', `/api/sessions/${SEED}/messages`, { text: 'Reply with the single word: x' });
+    check('a message for a held thread is turned back, so the phone branches instead', refused.status === 409 && refused.body.error === 'pc_holds', JSON.stringify(refused));
+    const bw = await api('POST', `/api/sessions/${SEED}/fork`, { text: 'what came before?' });
+    check('a branch starts while the computer holds the thread', bw.status === 200 && bw.body.agent === 'codex' && bw.body.from === SEED && bw.body.id !== SEED, JSON.stringify(bw.body));
+    const b1 = await replyOf(bw.body.id, /^before:/);
+    check('the branch carries the conversation so far', b1.said === 'before: Tidy the readme', b1.said);
+    check('the branch says where it came from, and its name says it is a branch', b1.session?.from?.id === SEED && /^(分支|Branch) · Tidy the readme$/.test(b1.session?.title || ''), JSON.stringify(b1.session));
+    const srcUsers = (await api('GET', `/api/sessions/${SEED}`)).body.events.filter((e) => e.k === 'user').map((e) => e.text);
+    check('the thread it came from is untouched', JSON.stringify(srcUsers) === '["Tidy the readme"]', JSON.stringify(srcUsers));
+    fs.closeSync(fd);
+    fs.unlinkSync(lockFile(SEED));
+    const freeEv = await f.until((x) => x.ev === 'tr' && x.d.k === 'pc' && x.d.held === false && f.evs.indexOf(x) > f.evs.indexOf(heldEv), 5000);
+    check('the computer letting go shows on the phone too', !!freeEv);
+    const inPlace = await api('POST', `/api/sessions/${SEED}/messages`, { text: 'Reply with the single word: inplace' });
+    const ip = await f.until((x) => x.ev === 'ev' && x.d.k === 'text' && x.d.text === 'inplace', 10000);
+    check('then the phone writes the same thread again', inPlace.status === 200 && !!ip, JSON.stringify(inPlace.body));
+    f.stop();
+  } else {
+    console.log('  skip: the Codex lock checks need Windows');
+  }
+
+  // a branch from one of the phone's own messages: the turns before it, and the new message
+  const hist = (await api('GET', `/api/sessions/${id}`)).body.events;
+  const uReady = hist.find((e) => e.k === 'user' && e.text === 'Reply with the single word: ready');
+  const uTwo = hist.find((e) => e.k === 'user' && e.text === 'Reply with the single word: two');
+  check('the phone\'s own messages carry their turns once in the record', !!uReady?.turn && !!uTwo?.turn && uReady.turn !== uTwo.turn);
+  const bt = await api('POST', `/api/sessions/${id}/fork`, { turn: uTwo.turn, text: 'what came before?' });
+  const b2 = await replyOf(bt.body.id, /^before:/);
+  check('a branch from a message keeps the turns before it, and only those', bt.status === 200 && b2.said === 'before: Reply with the single word: ready', b2.said);
+  const b0 = await api('POST', `/api/sessions/${id}/fork`, { turn: uReady.turn, text: 'what came before?' });
+  const b3 = await replyOf(b0.body.id, /^before:/);
+  check('a branch from the first message is a new thread in the same folder', b0.status === 200 && b3.said === 'before: nothing' && b3.session?.cwd === CWD && b3.session?.from?.id === id, JSON.stringify([b3.said, b3.session?.cwd, b3.session?.from]));
+  check('a turn that is not in the thread is refused', (await api('POST', `/api/sessions/${id}/fork`, { turn: 'nope', text: 'x' })).status === 400);
 
   // prefs
   const pf = await api('PUT', `/api/sessions/${id}/prefs`, { model: 'fake-sol', effort: 'max' });
