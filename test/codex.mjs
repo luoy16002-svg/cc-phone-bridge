@@ -146,6 +146,8 @@ try {
   check('list: not busy after a finished turn', seeded?.pcBusy === false);
   const onlyClaude = await api('GET', '/api/sessions?agent=claude');
   check('list: agent filter', !onlyClaude.body.sessions.some((s) => s.agent === 'codex'));
+  const ids = list.body.sessions.map((s) => s.id);
+  check('list: every conversation once', ids.length === new Set(ids).size, JSON.stringify(ids));
 
   const one = await api('GET', `/api/sessions/${SEED}`);
   const kinds = (one.body.events || []).map((e) => e.k).join(',');

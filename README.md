@@ -169,7 +169,7 @@ A theme is a folder in `public/themes/<id>/`. Its `theme.json` holds the colours
 
 ## Development
 
-- `npm test`: 89 end-to-end checks against a fake Claude Code that writes real transcript files, 45 against a fake Codex app server that keeps real rollout files and locks (no usage spent either way), then a check that every string on screen has an English entry.
+- `npm test`: 89 end-to-end checks against a fake Claude Code that writes real transcript files, 46 against a fake Codex app server that keeps real rollout files and locks (no usage spent either way), then a check that every string on screen has an English entry.
 - `npm run test:codex-real`: 24 checks with the real Codex CLI in a throwaway `CODEX_HOME`, a local stand-in for the model (no account, no usage) and a second Codex app server playing the Codex app: live turns, held conversations, branches, and handing a conversation back and forth. Skipped when Codex is not installed.
 - `node test/real.mjs`: a short run with the real Claude Code (Haiku, low effort, a temporary folder).
 - `node test/shots.mjs --lang en`: screenshots of every screen at phone and desktop size, on made-up conversations (a fake Codex in a throwaway folder, never your own); needs Playwright with WebKit.

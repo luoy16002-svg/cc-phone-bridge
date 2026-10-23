@@ -116,7 +116,7 @@ Codex 按它自己 `config.toml` 里的审批设置走。手机上发起的一�
 
 ## 开发
 
-- `npm test`：用假的 Claude Code（像真的一样写记录文件）跑 89 项端到端检查，用假的 Codex app-server（像真的一样写记录文件、加锁）跑 45 项，都不花用量；再检查界面上每句话都有英文。
+- `npm test`：用假的 Claude Code（像真的一样写记录文件）跑 89 项端到端检查，用假的 Codex app-server（像真的一样写记录文件、加锁）跑 46 项，都不花用量；再检查界面上每句话都有英文。
 - `npm run test:codex-real`：用真的 Codex 命令行跑 24 项：临时的 `CODEX_HOME`，本地模拟的模型（不用账号，不花用量），再起一个 Codex app-server 扮演桌面版，检查实时跟随、被占用的对话、分支，以及对话在手机和电脑之间来回交接。没装 Codex 时跳过。
 - `node test/real.mjs`：用真的 Claude Code（Haiku，低强度，临时文件夹）跑一小段。
 - `node test/shots.mjs --lang zh`：手机和桌面尺寸下每个页面的截图，用的都是编出来的对话（假的 Codex 放在临时文件夹里，不碰你自己的对话）；要装带 WebKit 的 Playwright。

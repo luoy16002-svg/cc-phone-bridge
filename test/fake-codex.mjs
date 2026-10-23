@@ -141,9 +141,11 @@ const handlers = {
     { id: 'fake-hidden', model: 'fake-hidden', displayName: 'Hidden', hidden: true, supportedReasoningEfforts: [], defaultReasoningEffort: 'low', isDefault: false },
   ], nextCursor: null }),
   'thread/list': (p) => {
-    // like the real list, it does not say what a thread was forked from
+    // like the real list, it does not say what a thread was forked from; and like the real one, a scan of the rollout
+    // files (no useStateDbOnly) lists a thread once per rollout file, here twice
     const all = Object.values(readIndex()).sort((a, b) => b.updatedAt - a.updatedAt).slice(0, p.limit || 50);
-    return { data: all.map((th) => ({ ...pub(th), forkedFromId: null })), nextCursor: null };
+    const data = all.map((th) => ({ ...pub(th), forkedFromId: null }));
+    return { data: p.useStateDbOnly ? data : data.flatMap((x) => [x, x]), nextCursor: null };
   },
   'thread/read': (p) => ({ thread: pub(find(p.threadId)) }),
   'thread/items/list': (p) => {

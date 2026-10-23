@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.4.1 (2026-10-23)
+
+- The list shows every Codex conversation once. It used to scan Codex's rollout files when the server started and every five minutes, and a scan lists a conversation once for each file it has, so cards came up twice and others dropped out of the list. It now reads Codex's state database, as the Codex app does, and scans only when the database is empty.
+
 ## 1.4.0 (2026-10-23)
 
 - **Branches.** Every message you sent has a branch button: a new conversation keeps what came before it, with the message ready to edit and send. The menu branches the whole conversation. The original stays as it was, and the branch says where it came from. Claude Code branches with `--fork-session` (cut at the message with `--resume-session-at`), Codex with its own `thread/fork`.
