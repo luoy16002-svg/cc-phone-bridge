@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.3.1 (2026-10-23)
+
+- The list opens faster with many Codex conversations: it reads Codex's state database and scans the rollout files only every few minutes.
+
 ## 1.3.0 (2026-10-23)
 
 - **Codex.** When the Codex CLI is installed, the conversations of the Codex app and the `codex` CLI join the list, marked Codex, with a switch to see one kind at a time. Read them in full (thinking summaries fold into the steps), carry them on, stop them, or start new ones with Codex's own models and efforts. Replies stream in word by word.

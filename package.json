@@ -1,6 +1,6 @@
 {
   "name": "cc-phone-bridge",
-  "version": "1.3.0",
+  "version": "1.3.1",
   "private": true,
   "type": "module",
   "description": "Duty Desk: use Claude Code and Codex on your computer from your phone, over your own network.",
