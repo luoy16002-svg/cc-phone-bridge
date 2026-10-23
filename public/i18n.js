@@ -239,6 +239,21 @@
     '已失效，正在换新的': 'Expired, getting a new one',
     连不上值班台服务: "Can't reach the Duty Desk server",
     '还有 {m} 分 {s} 秒失效，用过一次也会失效': 'Expires in {m}:{s}, or as soon as it is used',
+
+    // Codex
+    全部: 'All',
+    显示哪些对话: 'Which conversations to show',
+    交给谁: 'Who does it',
+    '要电脑上的 {agent} 做什么？': 'What should {agent} on the computer do?',
+    '{agent} 没能启动': "{agent} didn't start",
+    '没做完：{agent} 中途退出': "Not finished: {agent} quit partway",
+    '没能交给 {agent}': "Couldn't hand it to {agent}",
+    思考: 'Thinking',
+    'Codex 默认用 {model} · {effort}，也和电脑上一样。': 'Codex defaults to {model} · {effort}, also as on the computer.',
+    '这个对话正在电脑上的 Codex 里开着，同一时间只能有一处接着写。先在电脑上关掉它，或等它空闲后再发': 'This conversation is open in Codex on the computer, and only one place can write to it at a time. Close it there, or wait until it is idle, then send.',
+    '没能交给 Codex：{msg}': "Couldn't hand it to Codex: {msg}",
+    'Codex 请求确认，手机上不能代答，已拒绝。要放行，请在电脑上改 Codex 的审批设置': "Codex asked for approval. The phone can't answer, so it was refused. To allow it, change Codex's approval setting on the computer.",
+    'Codex 中途退出了': 'Codex quit partway',
   };
 
   const LANGS = { en: EN };

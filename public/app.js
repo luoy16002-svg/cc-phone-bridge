@@ -514,13 +514,20 @@
   }
 
   // ---------------------------------------------------------------- what the computer told us
-  function modelName(id) {
-    const m = (S.models || []).find((x) => x.id === id);
+  // Two agents can run on the computer: Claude Code, and Codex when it is installed there.
+  const AGENTS = { claude: 'Claude Code', codex: 'Codex' };
+  const agentOf = (s) => (s && s.agent === 'codex' ? 'codex' : 'claude');
+  const agentInfo = (a) => (S.agents && S.agents[a]) || (a === 'claude' ? { available: true, models: S.models || [], efforts: S.efforts, defaults: S.defaults } : { available: false });
+  const hasCodex = () => !!agentInfo('codex').available;
+
+  function modelName(id, agent) {
+    const m = (agentInfo(agent || 'claude').models || []).find((x) => x.id === id)
+      || (agentInfo('codex').models || []).find((x) => x.id === id) || (S.models || []).find((x) => x.id === id);
     if (m) return m.name;
     const r = /^claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?(?:-|$)/.exec(id || '');
     return r ? `${r[1][0].toUpperCase()}${r[1].slice(1)} ${r[2]}${r[3] ? `.${r[3]}` : ''}` : (id || '');
   }
-  const modelLine = (s) => [s.modelName || modelName(s.model), s.effort].filter(Boolean).join(' · ');
+  const modelLine = (s) => [s.modelName || modelName(s.model, agentOf(s)), s.effort].filter(Boolean).join(' · ');
 
   const themeName = (x) => (I18N.lang !== 'zh' && x.names?.[I18N.lang]) || x.name;
 
@@ -532,6 +539,7 @@
     S.models = st.models;
     S.efforts = st.efforts;
     S.defaults = st.defaults;
+    S.agents = st.agents || null;
     S.themes = st.themes || [];
     S.theme = st.server.theme || {};
     if (st.server.timeZone && st.server.timeZone !== TZ) {
@@ -550,8 +558,35 @@
     return box;
   }
 
-  const modelOptions = () => (S.models || []).map((m) => ({ value: m.id, label: m.name }));
-  const effortOptions = () => (S.efforts || ['low', 'medium', 'high', 'xhigh', 'max']).map((e) => ({ value: e, label: e }));
+  const modelOptions = (agent = 'claude') => (agentInfo(agent).models || []).map((m) => ({ value: m.id, label: m.name }));
+  // Codex says which efforts each model takes; Claude Code's are one list
+  function effortList(agent = 'claude', model = '') {
+    if (agent === 'codex') {
+      const m = (agentInfo('codex').models || []).find((x) => x.id === model);
+      return m && m.efforts.length ? m.efforts : ['low', 'medium', 'high', 'xhigh', 'max'];
+    }
+    return agentInfo('claude').efforts || S.efforts || ['low', 'medium', 'high', 'xhigh', 'max'];
+  }
+  const effortOptions = (agent, model) => effortList(agent, model).map((e) => ({ value: e, label: e }));
+  const fitEffort = (agent, model, effort) => {
+    const list = effortList(agent, model);
+    if (list.includes(effort)) return effort;
+    const m = agent === 'codex' ? (agentInfo('codex').models || []).find((x) => x.id === model) : null;
+    return (m && list.includes(m.defaultEffort) && m.defaultEffort) || list[Math.min(list.length - 1, 2)] || effort;
+  };
+  // the model and effort pickers, redrawn when the model changes what efforts there are
+  function pickers(agent, model, effort, onChange) {
+    const box = h('div', { class: 'pick' });
+    const draw = () => {
+      effort = fitEffort(agent, model, effort);
+      box.replaceChildren(
+        h('h2', null, t('模型')), seg(modelOptions(agent), model, (v) => { model = v; draw(); onChange(model, effort); }, t('模型'), 'grid2'),
+        h('h2', null, t('思考强度')), seg(effortOptions(agent, model), effort, (v) => { effort = v; onChange(model, effort); }, t('思考强度'), 'mono'));
+      onChange(model, effort);
+    };
+    draw();
+    return box;
+  }
 
   // ---------------------------------------------------------------- the list: every Claude Code conversation on the PC
   const busyNow = (s) => s.state === 'running' || s.pcBusy;
@@ -570,16 +605,30 @@
     const cards = h('div', { class: 'cards' }, h('div', { class: 'hint-row' }, t('在读电脑上的对话…')));
     const suggest = h('div', { class: 'suggest' });
     const sub = h('span', { class: 'status' });
+    const filterBox = h('div', { class: 'agentbar' });
     mount(h('div', { class: 'view' },
       top({ title: t('值班台'), sub, right: [h('button', { class: 'ib', 'aria-label': t('设置'), type: 'button', onclick: () => go('#/settings') }, icon('settings'))] }),
       banner(),
       h('main', { class: 'scroll page' },
         h('button', { class: 'btn wide', type: 'button', onclick: () => go('#/new') }, icon('plus', 'sm'), t('新对话')),
+        filterBox,
         suggest,
         cards),
       h('div')));
 
     let list = [];
+    // which agent's conversations the list shows; remembered on this device
+    let only = LS.get('deskAgent', 'all');
+    const drawFilter = () => {
+      if (!hasCodex()) {
+        filterBox.replaceChildren();
+        only = 'all';
+        return;
+      }
+      filterBox.replaceChildren(seg([{ value: 'all', label: t('全部') }, { value: 'claude', label: AGENTS.claude }, { value: 'codex', label: AGENTS.codex }],
+        only, (v) => { only = v; LS.set('deskAgent', v); draw(); }, t('显示哪些对话')));
+    };
+    const shown = () => (only === 'all' ? list : list.filter((s) => agentOf(s) === only));
     // suggestions other tools on the computer wrote: a tap starts the conversation, nothing starts by itself
     const drawSuggest = (items) => {
       if (!items || !items.length) {
@@ -615,19 +664,21 @@
     const card = (s) => h('button', { class: 'card', type: 'button', onclick: () => go(`#/s/${s.id}`) },
       h('div', { class: 't' }, s.title || t('新对话')),
       h('div', { class: 'p' }, s.state === 'running' ? (s.lastPrompt ? t('在做：{text}', { text: s.lastPrompt }) : t('在做…')) : (s.lastReply || s.lastPrompt || t('还没有回复'))),
-      h('div', { class: 'm' }, ...statusOf(s), h('span', null, s.folder), h('span', null, s.lastModel || s.modelName), h('span', null, ago(s.updatedAt))));
+      h('div', { class: 'm' }, ...statusOf(s), hasCodex() ? h('span', { class: `ag ${agentOf(s)}` }, AGENTS[agentOf(s)]) : null,
+        h('span', null, s.folder), h('span', null, s.lastModel || s.modelName), h('span', null, ago(s.updatedAt))));
     const draw = () => {
       const running = list.filter(busyNow).length;
       sub.replaceChildren(h('span', { class: `dot ${running ? 'run' : 'ok'}` }), running ? t('{n} 个对话在做', { n: running }) : (S.server ? t('已连上 {host}', { host: S.server.host }) : t('已连上电脑')));
-      if (!list.length) {
+      const view = shown();
+      if (!view.length) {
         cards.replaceChildren(h('div', { class: 'empty' }, h('b', null, t('还没有对话')), t('点上面的“新对话”，写下要电脑做的事。')));
         return;
       }
       const out = [];
-      const now = list.filter(busyNow);
+      const now = view.filter(busyNow);
       if (now.length) out.push(h('div', { class: 'day now' }, t('正在做')), ...now.map(card));
       let day = '';
-      for (const s of list) {
+      for (const s of view) {
         if (busyNow(s)) continue;
         const k = dayKey(s.updatedAt);
         if (k !== day) {
@@ -647,7 +698,7 @@
         if (!(e instanceof Unpaired) && !list.length) cards.replaceChildren(h('div', { class: 'empty' }, t('读不到电脑上的对话')));
       }
     };
-    loadState().catch(() => null).then(refresh);
+    loadState().catch(() => null).then(() => { drawFilter(); return refresh(); });
     let pending = false;
     stream(() => '/api/stream', {
       onEvent: (ev, d) => {
@@ -783,8 +834,11 @@
     stopAll();
     if (!S.defaults) await loadState().catch(() => null);
     let cwd = LS.get('lastCwd', '');
-    let model = S.defaults?.model || '';
-    let effort = S.defaults?.effort || 'high';
+    let agent = hasCodex() ? LS.get('newAgent', 'claude') : 'claude';
+    if (agent === 'codex' && !hasCodex()) agent = 'claude';
+    const defaultsOf = (a) => agentInfo(a).defaults || {};
+    let model = defaultsOf(agent).model || '';
+    let effort = defaultsOf(agent).effort || 'high';
     let recent = [];
     let roots = [];
     // where a folder sits, said from the root that holds it: "Projects" or "Projects/site/docs"
@@ -815,37 +869,56 @@
     drawWhere();
     api('GET', '/api/browse').then((r) => { recent = r.recent || []; roots = r.roots || []; drawWhere(); }).catch(() => null);
 
+    const ask = (a) => t('要电脑上的 {agent} 做什么？', { agent: AGENTS[a] });
     const comp = composer({
-      placeholder: t('要电脑上的 Claude Code 做什么？'),
+      placeholder: ask(agent),
       draftKey: 'new',
       onSend: async (text, images) => {
         if (!cwd) throw Object.assign(new Error('no folder'), { shown: t('先选一个文件夹') });
         toast(t('正在开始…'));
         try {
-          const r = await api('POST', '/api/sessions', { cwd, model, effort, text, images });
+          const r = await api('POST', '/api/sessions', { agent, cwd, model, effort, text, images });
           go(`#/s/${r.id}`);
         } catch (e) {
           if (e.message === 'outside_roots') e.shown = t('这个文件夹不在电脑允许的范围里');
           else if (e.message === 'no_such_dir') e.shown = t('这个文件夹已经不在了');
-          else if (e.status === 502) e.shown = t('Claude Code 没能启动');
+          else if (e.status === 502 || e.message === 'codex_unavailable') e.shown = t('{agent} 没能启动', { agent: AGENTS[agent] });
           throw e;
         }
       },
     });
+    // the model and effort part follows the chosen agent
+    const tune = h('div', { class: 'form' });
+    const drawTune = () => {
+      const d = defaultsOf(agent);
+      tune.replaceChildren(pickers(agent, model, effort, (m, e) => { model = m; effort = e; }),
+        h('p', null, d.model ? t('默认和电脑上一样：{model} · {effort}', { model: d.modelName || modelName(d.model, agent), effort: d.effort }) : ''));
+    };
+    drawTune();
+    const who = hasCodex() ? h('div', { class: 'form' }, h('h2', null, t('交给谁')),
+      seg([{ value: 'claude', label: AGENTS.claude }, { value: 'codex', label: AGENTS.codex }], agent, (v) => {
+        if (v === agent) return;
+        agent = v;
+        LS.set('newAgent', v);
+        model = defaultsOf(v).model || '';
+        effort = defaultsOf(v).effort || 'high';
+        comp.ta.placeholder = ask(v);
+        drawTune();
+      }, t('交给谁'))) : null;
     mount(h('div', { class: 'view' },
       top({ back: '#/', title: t('新对话') }),
       banner(),
       h('main', { class: 'scroll page' },
+        who,
         h('div', { class: 'form' }, h('h2', null, t('在哪个文件夹里做')), where),
-        h('div', { class: 'form' }, h('h2', null, t('模型')), seg(modelOptions(), model, (v) => { model = v; }, t('模型'), 'grid2'),
-          h('h2', null, t('思考强度')), seg(effortOptions(), effort, (v) => { effort = v; }, t('思考强度'), 'mono'),
-          h('p', null, S.defaults ? t('默认和电脑上一样：{model} · {effort}', { model: S.defaults.modelName, effort: S.defaults.effort }) : ''))),
+        tune),
       comp.el));
   }
 
   // ---------------------------------------------------------------- a conversation
-  const TOOL_ICONS = { Bash: 'terminal-2', PowerShell: 'terminal-2', Read: 'file-text', Edit: 'pencil', MultiEdit: 'pencil', Write: 'file-plus', NotebookEdit: 'pencil', Grep: 'search', Glob: 'search', WebFetch: 'world', WebSearch: 'world', Agent: 'subtask', Task: 'subtask', TodoWrite: 'list-check', Skill: 'bolt' };
-  const TOOL_KIND = { Bash: t('命令'), PowerShell: t('命令'), Read: t('读'), Write: t('写'), Edit: t('改'), MultiEdit: t('改'), NotebookEdit: t('改'), Grep: t('查'), Glob: t('查'), WebFetch: t('网页'), WebSearch: t('搜索'), Agent: t('子任务'), Task: t('子任务'), TodoWrite: t('待办'), Skill: t('技能') };
+  const TOOL_ICONS = { Bash: 'terminal-2', PowerShell: 'terminal-2', Read: 'file-text', Edit: 'pencil', MultiEdit: 'pencil', Write: 'file-plus', NotebookEdit: 'pencil', Grep: 'search', Glob: 'search', WebFetch: 'world', WebSearch: 'world', Agent: 'subtask', Task: 'subtask', TodoWrite: 'list-check', Skill: 'bolt', Think: 'brain', Image: 'photo' };
+  const TOOL_KIND = { Bash: t('命令'), PowerShell: t('命令'), Read: t('读'), Write: t('写'), Edit: t('改'), MultiEdit: t('改'), NotebookEdit: t('改'), Grep: t('查'), Glob: t('查'), WebFetch: t('网页'), WebSearch: t('搜索'), Agent: t('子任务'), Task: t('子任务'), TodoWrite: t('待办'), Skill: t('技能'), Think: t('思考'), Image: t('图片') };
+  const toolLabel = (name) => (name === 'Think' ? t('思考') : name);
   const ACT = { thinking: t('在想'), writing: t('在写回复') };
   const runningTool = (name) => t('在执行 {name}', { name });
   const STOPPED = ['aborted_tools', 'aborted_streaming', 'stopped', 'interrupted'];
@@ -883,7 +956,14 @@
     const comp = composer({
       placeholder: t('接着说…'),
       draftKey: `s.${id}`,
-      onSend: (text, images) => api('POST', `/api/sessions/${id}/messages`, { text, images }),
+      onSend: async (text, images) => {
+        try {
+          return await api('POST', `/api/sessions/${id}/messages`, { text, images });
+        } catch (e) {
+          if (e.message === 'pc_busy') e.shown = t('电脑上正在做这个对话，做完再发');
+          throw e;
+        }
+      },
       onStop: async () => {
         try {
           await api('POST', `/api/sessions/${id}/interrupt`);
@@ -975,6 +1055,16 @@
           case 'tool_result':
             if (tools.has(e.tool)) tools.get(e.tool).res = e;
             break;
+          case 'think': {
+            // Codex's thinking summaries fold into the steps, one line each
+            if (!group) {
+              group = { key: `g${e.id}`, type: 'tools', lines: [] };
+              add(group, e.t);
+            }
+            const first = String(e.text || '').split('\n').find((x) => x.trim()) || '';
+            group.lines.push({ e: { ...e, name: 'Think', summary: first.replace(/\*\*/g, ''), detail: e.text }, res: null, think: true });
+            break;
+          }
           case 'note':
             group = null;
             add({ key: `n${e.id}`, type: 'note', e }, e.t);
@@ -1040,7 +1130,7 @@
       const lastRes = [...b.lines].reverse().find((l) => l.res)?.res;
       const span = !b.working && lastRes?.t && b.lines[0].e.t ? lastRes.t - b.lines[0].e.t : 0;
       const what = b.working || n === 1
-        ? [h('span', { class: 'count' }, n > 1 ? `${t('第 {n} 步', { n })}  ` : ''), h('span', { class: 'lastline' }, `${last.name} ${last.summary || ''}`)]
+        ? [h('span', { class: 'count' }, n > 1 ? `${t('第 {n} 步', { n })}  ` : ''), h('span', { class: 'lastline' }, `${toolLabel(last.name)} ${last.summary || ''}`)]
         : [h('span', { class: 'count' }, t('{n} 步', { n })), h('span', { class: 'kinds' }, ` · ${kinds}`)];
       const hd = h('button', { class: 'hd', type: 'button', 'aria-expanded': String(expanded) },
         icon('tool', 'xs'),
@@ -1054,8 +1144,8 @@
       for (const l of b.lines) {
         const e = l.e;
         const status = l.res ? (l.res.ok ? icon('check', 'xs') : icon('x', 'xs bad')) : h('span');
-        const ln = h('button', { class: 'ln', type: 'button', 'aria-expanded': String(C.open.has(e.id)) },
-          icon(TOOL_ICONS[e.name] || 'tool', 'xs'), h('span', { class: 'n' }, e.name), h('span', { class: 's' }, e.summary || ''), h('span', { class: 'd' }, stepTime(l)), status);
+        const ln = h('button', { class: `ln${l.think ? ' think' : ''}`, type: 'button', 'aria-expanded': String(C.open.has(e.id)) },
+          icon(TOOL_ICONS[e.name] || 'tool', 'xs'), h('span', { class: 'n' }, toolLabel(e.name)), h('span', { class: 's' }, e.summary || ''), h('span', { class: 'd' }, stepTime(l)), status);
         ln.addEventListener('click', () => { if (C.open.has(e.id)) C.open.delete(e.id); else C.open.add(e.id); render(false); });
         box.append(ln);
         if (C.open.has(e.id)) box.append(h('div', { class: 'dt' }, e.detail || e.summary || '', l.res?.text ? h('span', { class: 'o' }, l.res.text) : null));
@@ -1066,9 +1156,10 @@
     function drawResult(b) {
       const e = b.e;
       const time = dur(e.ms);
-      const mdl = b.model ? h('span', null, modelName(b.model)) : null;
+      const mdl = b.model ? h('span', null, modelName(b.model, agentOf(C.session))) : null;
       if (e.ok) return h('div', { class: 'res' }, h('span', null, t('用时 {time}', { time })), mdl);
-      const why = STOPPED.includes(e.reason) ? t('已停下') : { exit: t('没做完：Claude Code 中途退出'), spawn: t('没能启动 Claude Code') }[e.reason] || t('没做完');
+      const who = AGENTS[agentOf(C.session)];
+      const why = STOPPED.includes(e.reason) ? t('已停下') : { exit: t('没做完：{agent} 中途退出', { agent: who }), spawn: t('没能交给 {agent}', { agent: who }) }[e.reason] || t('没做完');
       return h('div', { class: 'res bad' }, h('span', null, e.ms ? t('{why}，用时 {time}', { why, time }) : why), mdl);
     }
 
@@ -1078,7 +1169,7 @@
       if (b.type === 'tools') return drawTools(b);
       if (b.type === 'note') return h('div', { class: `note ${b.e.tone || ''}` }, icon(b.e.tone === 'error' ? 'alert-triangle' : 'info-circle', 'xs'), b.e.key ? t(b.e.key, b.e.vars) : t(b.e.text));
       if (b.type === 'day') return h('div', { class: 'daysep' }, dayLabel(b.t));
-      if (b.type === 'turn') return h('div', { class: 'res' }, h('span', null, t('用时 {time}', { time: dur(b.ms) })), b.model ? h('span', null, modelName(b.model)) : null);
+      if (b.type === 'turn') return h('div', { class: 'res' }, h('span', null, t('用时 {time}', { time: dur(b.ms) })), b.model ? h('span', null, modelName(b.model, agentOf(C.session))) : null);
       return drawResult(b);
     }
 
@@ -1148,7 +1239,7 @@
       if (!C.cursor) return;
       const before = scroller.scrollHeight;
       try {
-        const r = await api('GET', `/api/sessions/${id}/history?before=${C.cursor}`);
+        const r = await api('GET', `/api/sessions/${id}/history?before=${encodeURIComponent(C.cursor)}`);
         const ids = new Set(C.hist.map((e) => e.id));
         C.hist = [...r.events.filter((e) => !ids.has(e.id)), ...C.hist];
         C.cursor = r.cursor;
@@ -1286,6 +1377,7 @@
     let model = s.model;
     let effort = s.effort;
     let close = null;
+    const agent = agentOf(s);
     const save = h('button', { class: 'btn wide', type: 'button' }, t('用这个设置'));
     save.addEventListener('click', async () => {
       try {
@@ -1299,15 +1391,14 @@
       }
     });
     close = sheet(h('div', { class: 'prefs' },
-      h('h2', null, t('模型')), seg(modelOptions(), model, (v) => { model = v; }, t('模型'), 'grid2'),
-      h('h2', null, t('思考强度')), seg(effortOptions(), effort, (v) => { effort = v; }, t('思考强度'), 'mono'),
+      pickers(agent, model, effort, (m, e) => { model = m; effort = e; }),
       save));
   }
 
   function openMenu(C) {
     const s = C.session;
     if (!s) return;
-    const cmd = (S.server?.resume || 'claude --resume {id}').replace('{id}', s.id);
+    const cmd = (agentOf(s) === 'codex' ? agentInfo('codex').resume || 'codex resume {id}' : S.server?.resume || 'claude --resume {id}').replace('{id}', s.id);
     const copyBox = h('div', { class: 'cmd' }, cmd);
     let close = null;
     close = sheet(h('div', null,
@@ -1432,7 +1523,8 @@
           langBox),
         h('div', { class: 'form' },
           h('h2', null, t('默认')),
-          h('p', null, S.defaults ? t('新对话默认用 {model} · {effort}，和电脑上的设置一样。', { model: S.defaults.modelName, effort: S.defaults.effort }) : '')),
+          h('p', null, S.defaults ? t('新对话默认用 {model} · {effort}，和电脑上的设置一样。', { model: S.defaults.modelName, effort: S.defaults.effort }) : ''),
+          hasCodex() && agentInfo('codex').defaults ? h('p', null, t('Codex 默认用 {model} · {effort}，也和电脑上一样。', { model: agentInfo('codex').defaults.modelName, effort: agentInfo('codex').defaults.effort })) : null),
         h('div', { class: 'form' },
           h('h2', null, t('这台设备')),
           h('dl', { class: 'kv' }, h('dt', null, t('名字')), h('dd', { class: 'plain' }, S.device?.name || ''), h('dt', null, t('时间')), h('dd', { class: 'plain' }, t('按{zone}显示', { zone: F.name || t('电脑的时区') }))),
@@ -1444,6 +1536,7 @@
             ...(srv.addresses || []).flatMap((a) => [h('dt', null, a.kind === 'tailscale' ? 'Tailscale' : t('局域网')), h('dd', null, `${a.address}:${srv.port}`)]),
             h('dt', null, t('连接')), h('dd', { class: 'plain' }, srv.scheme === 'https' ? t('HTTPS 加密') : t('HTTP，只在局域网里')),
             h('dt', null, 'Claude Code'), h('dd', null, srv.claude || ''),
+            ...(srv.codex ? [h('dt', null, 'Codex'), h('dd', null, srv.codex)] : []),
             h('dt', null, t('值班台')), h('dd', null, srv.version || ''))),
         h('div', { class: 'form' }, leave, sure)),
       h('div')));

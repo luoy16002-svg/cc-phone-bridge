@@ -1,8 +1,8 @@
 # 值班台
 
-在手机上用电脑里的 Claude Code，只走你自己的网络。
+在手机上用电脑里的 Claude Code 和 Codex，只走你自己的网络。
 
-值班台是一个和 Claude Code 放在同一台电脑上的小服务，加一个添加到手机主屏幕的网页应用。手机上能看到电脑里已有的全部对话，完整地读，接着聊，或者开新的。活还是在电脑上干：同一个 Claude Code，同一套设置，同一个登录。中间不经过任何别人的服务器。
+值班台是一个和 Claude Code（装了 Codex 的话也包括 Codex）放在同一台电脑上的小服务，加一个添加到手机主屏幕的网页应用。手机上能看到电脑里已有的全部对话，完整地读，接着聊，或者开新的。活还是在电脑上干：同样的程序，同一套设置，同一个登录。中间不经过任何别人的服务器。
 
 ![手机上的值班台：对话列表、展开了工具步骤的对话、选文件夹、深色主题](docs/phone-zh.webp)
 
@@ -18,11 +18,13 @@
 - **做完提醒**：你没在看的时候一轮做完了，经 [ntfy](https://ntfy.sh) 推一条提醒，只说做完了和用时；对话标题默认不带。
 - **浅色和深色**两套手绘主题，跟着手机切换。主题就是一个放颜色和画的文件夹，可以自己加。
 - **中文和英文**，每台手机自己选。
+- **Codex 也一样**：电脑上装了 Codex 命令行，Codex 桌面版和 `codex` 命令行里的对话就会出现在同一个列表里，标着 Codex，可以只看其中一种。能接着聊，也能用 Codex 自己的模型和思考强度开新对话；回复逐字出现；电脑上 Codex 桌面版里正在跑的一轮，手机上实时跟着显示。详见下面的“Codex”一节。
 - **不用应用商店**：iPhone 和安卓都能添加到主屏幕。
 
 ## 需要
 
 - 电脑上装好并登录了 Claude Code。
+- 想用 Codex 的话（可选）：装好并登录 Codex 命令行，值班台会在 PATH 里找 `codex`。
 - Node.js 20 或更新。
 - 手机和电脑在同一个网络里：同一个 Wi-Fi，或者都在 [Tailscale](https://tailscale.com) 上。
 
@@ -62,7 +64,17 @@ npm start
 - `timeZone`：手机上的时间按这个时区显示。
 - `push.ntfyTopic`：做完提醒用的 ntfy 主题，起一个长的随机名字，知道名字的人都能读到。
 - `tls.cert`、`tls.key`：用自己的证书开 HTTPS，比如 `tailscale cert` 或 mkcert 生成的。
+- `codex.enabled`、`codex.command`、`codex.home`：要不要显示 Codex 的对话（默认显示）、Codex 程序（默认在 PATH 里找 `codex`）、Codex 存设置和对话的地方（默认 `CODEX_HOME` 或 `~/.codex`）。
 - `suggestions.file`：别的程序写的建议文件。电脑上的脚本（比如找活的监控、构建机器人）往里写想做的事，值班台首页最上面就会出现卡片，点“开始”就在那个文件夹里用它写好的要求开一个新对话；点“不用了”就不再显示，过期的自动消失。不点就什么都不会启动。文件格式见[英文说明](README.md#suggestions)。
+
+## Codex
+
+电脑上有 Codex 命令行时，值班台通过 Codex 自己的 app-server（`codex app-server`，标准输入输出上的 JSON-RPC）和它打交道，和 Codex 桌面版用的是同一套接口：
+
+- 列表、历史和模型都直接问 Codex；每张卡片上最后一句问话和回复取自这个对话的记录文件。思考摘要折进步骤里。
+- 新对话在你选的文件夹里开，用你选的模型和思考强度；默认值来自 Codex 自己的 `config.toml`。
+- Codex 规定一个对话同一时间只能有一个程序在写。所以手机只在这一轮运行时占用对话，做完几秒就放开，电脑上的 Codex 桌面版或命令行随时能接着用。要是 Codex 桌面版正开着这个对话，手机会直接说明，不会硬发。
+- 电脑上正在跑的一轮从记录文件实时跟随，手机上同步显示；这一轮做完之前，手机上写的话先等着。
 
 ## 安全
 
@@ -79,6 +91,8 @@ npm start
 
 手机没法回答 Claude Code 的权限询问。在 Claude Code 的默认模式下，需要询问的工具会被拒绝，Claude 会知道这一点。想让手机上能做更多，设 `claude.permissionMode`（比如 `acceptEdits`），或者在 Claude Code 自己的设置里放行要用的工具。
 
+Codex 按它自己 `config.toml` 里的审批设置走。手机上发起的一轮如果 Codex 请求确认，会被拒绝，对话里会写明；设成 `approval_policy = "never"` 就不会来问。
+
 ## 硬盘和内存
 
 - 没有数据库，不存对话的副本。写盘很少：设备列表最多十分钟写一次，日志上限 1 MB、留一份旧的，手机传的图片留 7 天、总共不超过 200 MB。
@@ -90,7 +104,7 @@ npm start
 
 ## 开发
 
-- `npm test`：用假的 Claude Code（像真的一样写记录文件，不花用量）跑 73 项端到端检查，再检查界面上每句话都有英文。
+- `npm test`：用假的 Claude Code（像真的一样写记录文件）跑 78 项端到端检查，用假的 Codex app-server（像真的一样写记录文件）跑 29 项，都不花用量；再检查界面上每句话都有英文。
 - `node test/real.mjs`：用真的 Claude Code（Haiku，低强度，临时文件夹）跑一小段。
 - `node test/shots.mjs --lang zh`：手机和桌面尺寸下每个页面的截图（要装带 WebKit 的 Playwright）。
 
@@ -98,4 +112,4 @@ npm start
 
 MIT。安装时一起打包的：霞鹜文楷 Screen 和 JetBrains Mono（SIL Open Font License 1.1）、Tabler Icons（MIT）、marked（MIT）、DOMPurify（Apache 2.0 或 MPL 2.0）。
 
-值班台是独立项目，不是 Anthropic 做的，也没有得到 Anthropic 的背书。
+值班台是独立项目，不是 Anthropic 或 OpenAI 做的，也没有得到它们的背书。

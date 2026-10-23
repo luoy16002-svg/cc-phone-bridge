@@ -1,8 +1,8 @@
 # Duty Desk
 
-Use Claude Code on your computer from your phone, over your own network.
+Use Claude Code and Codex on your computer from your phone, over your own network.
 
-Duty Desk is a small server that runs next to Claude Code, plus a web app you add to your phone's home screen. The phone lists the conversations your computer already has, shows them in full, and lets you carry them on or start new ones. The work still happens on the computer: the same Claude Code, the same settings, the same login. Nothing goes through anyone else's server.
+Duty Desk is a small server that runs next to Claude Code (and Codex, if you have it), plus a web app you add to your phone's home screen. The phone lists the conversations your computer already has, shows them in full, and lets you carry them on or start new ones. The work still happens on the computer: the same programs, the same settings, the same login. Nothing goes through anyone else's server.
 
 ![Duty Desk on a phone: the conversation list, a conversation with its tool steps open, the folder picker, the dark theme](docs/phone-en.webp)
 
@@ -18,12 +18,14 @@ Duty Desk is a small server that runs next to Claude Code, plus a web app you ad
 - **A notification when a turn ends** while you're away, through [ntfy](https://ntfy.sh). It says that something finished and how long it took. The conversation's title is left out unless you allow it.
 - **Light and dark**, both drawn by hand, following the phone. A theme is a folder of colours and drawings, so you can add your own.
 - **English and Chinese.** Each phone picks its own.
+- **Codex too.** If the Codex CLI is installed, the conversations of the Codex app and the `codex` CLI show in the same list, marked Codex, with a switch to see one kind at a time. Carry them on or start new ones with Codex's own models and efforts; replies stream in word by word; a turn running in the Codex app on the computer shows on the phone as it happens. See [Codex](#codex).
 - **Suggestions from your own scripts.** A watcher or build bot on the computer can write a JSON file of things worth starting; they show at the top of the desk and start with one tap. See [Suggestions](#suggestions).
 - **No app store.** It installs to the home screen on iPhone and Android.
 
 ## What you need
 
 - Claude Code, signed in, on the computer.
+- For Codex conversations (optional): the Codex CLI, signed in. Duty Desk finds `codex` on the PATH.
 - Node.js 20 or newer.
 - The phone on the same network as the computer: the same Wi-Fi, or both on [Tailscale](https://tailscale.com).
 
@@ -64,7 +66,11 @@ Everything has a default. To change something, put it in `config.json` in the da
 | `claude.permissionMode` | Claude Code's own | Passed as `--permission-mode`. See [Permissions](#permissions). |
 | `claude.env` | | Extra environment variables for Claude Code. |
 | `claude.resumeCommand` | `claude --resume {id}` | The command the phone shows for picking a conversation up in a terminal. |
-| `models`, `efforts` | Opus, Sonnet, Haiku, Fable; `low` to `max` | What the phone offers. |
+| `models`, `efforts` | Opus, Sonnet, Haiku, Fable; `low` to `max` | What the phone offers for Claude Code. Codex's models and efforts come from Codex itself. |
+| `codex.enabled` | `true` | Show Codex conversations when the Codex CLI is installed. |
+| `codex.command` | `codex` | The Codex program, found on the PATH. |
+| `codex.home` | `CODEX_HOME` or `~/.codex` | Where Codex keeps its settings and conversations. |
+| `codex.resumeCommand` | `codex resume {id}` | The command the phone shows for picking a Codex conversation up in a terminal. |
 | `theme` | `auto` | A folder in `public/themes`, or `auto` for `autoThemes.light` and `.dark`, following each phone. |
 | `timeZone` | the computer's | Times on the phone are shown in this zone. |
 | `lang` | the computer's | The language of notifications (`en` or `zh`). Each phone picks its own screen language. |
@@ -98,6 +104,15 @@ Point `suggestions.file` at a JSON file and any program on the computer can put 
 
 The card shows the title, the detail and the folder. **Start** begins a new conversation in `cwd` with `prompt`, using the computer's default model and effort; **Look** opens `link` (https only); **Dismiss** hides it for good. `id` is letters, digits and `.:_-`; `cwd` must be inside `roots`; cards past `expires` (seconds since 1970) are left out. The desk updates within a few seconds of the file changing. Nothing starts by itself: a conversation begins only when someone taps Start on a paired phone.
 
+## Codex
+
+When the Codex CLI is on the computer, Duty Desk talks to it through Codex's own app server (`codex app-server`, JSON-RPC over stdio), the same way the Codex app does:
+
+- The list, the history and the models come from Codex itself; the last prompt and reply on each card come from the conversation's rollout file. Thinking summaries fold into the steps.
+- New conversations start in a folder you pick, with the model and effort you pick; the defaults are Codex's own `config.toml`.
+- Codex lets one program at a time write a conversation. So the phone holds a conversation only while its turn runs and lets go a few seconds after, and you can open it in the Codex app or the CLI right away. If the Codex app has it open, the phone says so instead of sending.
+- A turn running on the computer is followed from the rollout file, so it shows on the phone as it happens, and the phone holds its own messages until that turn ends.
+
 ## How it works
 
 ```mermaid
@@ -129,6 +144,8 @@ A paired phone can do whatever Claude Code on your computer can do. Duty Desk is
 
 The phone can't answer Claude Code's permission prompts. In Claude Code's default mode, a tool that would ask is refused, and Claude is told so. If you want more from the phone, set `claude.permissionMode` (for example `acceptEdits`), or allow the tools you want in Claude Code's own settings.
 
+Codex follows its own approval policy from `config.toml`. If Codex asks for an approval from the phone, the request is refused and the conversation says so; with `approval_policy = "never"` none come.
+
 ## Disk and memory
 
 - No database and no copies of conversations. Writes are rare: the device list at most once every ten minutes, logs capped at 1 MB with one old copy, pictures from the phone kept 7 days within 200 MB.
@@ -140,7 +157,7 @@ A theme is a folder in `public/themes/<id>/`. Its `theme.json` holds the colours
 
 ## Development
 
-- `npm test`: 73 end-to-end checks against a fake Claude Code that writes real transcript files (no usage spent), then a check that every string on screen has an English entry.
+- `npm test`: 78 end-to-end checks against a fake Claude Code that writes real transcript files, 29 against a fake Codex app server that keeps real rollout files (no usage spent either way), then a check that every string on screen has an English entry.
 - `node test/real.mjs`: a short run with the real Claude Code (Haiku, low effort, a temporary folder).
 - `node test/shots.mjs --lang en`: screenshots of every screen at phone and desktop size (needs Playwright with WebKit).
 
@@ -148,4 +165,4 @@ A theme is a folder in `public/themes/<id>/`. Its `theme.json` holds the colours
 
 MIT. Bundled at install time: LXGW WenKai Screen and JetBrains Mono (SIL Open Font License 1.1), Tabler Icons (MIT), marked (MIT), DOMPurify (Apache 2.0 or MPL 2.0).
 
-Duty Desk is an independent project. It is not made or endorsed by Anthropic.
+Duty Desk is an independent project. It is not made or endorsed by Anthropic or OpenAI.

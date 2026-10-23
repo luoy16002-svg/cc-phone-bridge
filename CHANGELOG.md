@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.3.0 (2026-10-23)
+
+- **Codex.** When the Codex CLI is installed, the conversations of the Codex app and the `codex` CLI join the list, marked Codex, with a switch to see one kind at a time. Read them in full (thinking summaries fold into the steps), carry them on, stop them, or start new ones with Codex's own models and efforts. Replies stream in word by word.
+- A Codex turn running on the computer shows on the phone as it happens, and the phone waits for it before sending.
+- Codex lets one program at a time write a conversation, so the phone lets go a few seconds after its turn: the same conversation opens in the Codex app or the CLI right away. If the Codex app has it open, the phone says so.
+- Settings show the Codex version and its defaults. New keys: `codex.enabled`, `codex.command`, `codex.home`, `codex.resumeCommand`.
+
 ## 1.2.0 (2026-10-15)
 
 - **Suggestions.** Another program on the computer (a job watcher, a build bot, a reminder script) can write a small JSON file of things worth starting. They show at the top of the desk; tap Start and the conversation begins in that program's folder with the prompt it wrote. Dismissed or expired suggestions go away. Nothing starts without a tap. Set `suggestions.file` to turn it on.

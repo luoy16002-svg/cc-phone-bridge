@@ -34,7 +34,7 @@ for (const f of ['public/app.js', 'public/pc.js']) {
     }
   });
 }
-for (const f of ['lib/claude.mjs']) {
+for (const f of ['lib/claude.mjs', 'lib/codex.mjs']) {
   for (const m of read(f).matchAll(/note\('(?:warn|error|info)', '((?:[^'\\\n]|\\.)*)'/g)) keys.add(unescape(m[1]));
 }
 const html = read('public/pc.html');

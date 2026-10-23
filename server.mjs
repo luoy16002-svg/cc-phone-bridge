@@ -16,7 +16,8 @@ import { Store } from './lib/store.mjs';
 import { Pairing, newDevice, findDevice } from './lib/pair.mjs';
 import { Runner, claudeCommand, detectVersion, killTree, MODELS, EFFORTS, modelName, defaults } from './lib/claude.mjs';
 import { isLoopback, isPrivate, hostAllowed, addresses } from './lib/net.mjs';
-import { configDir, projectKey, listSessions, sessionFile, sessionMeta, historyPage, lineEvents } from './lib/transcripts.mjs';
+import { configDir, projectKey, listSessions, sessionFile, sessionMeta, historyPage, lineEvents, preview } from './lib/transcripts.mjs';
+import { CodexHub, CodexRunner, rolloutInfo, rolloutLineEvents, rolloutId, codexHome, findRollout } from './lib/codex.mjs';
 import { push, hasPush } from './lib/push.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -43,6 +44,15 @@ function log(msg) {
   } catch { /* logging must never take the server down */ }
   if (process.env.CCPB_VERBOSE) process.stdout.write(line);
 }
+
+// Codex: one app server for every Codex thread the phone touches, started on first use.
+const hub = new CodexHub(log);
+hub.clientVersion = VERSION;
+const oneLine = (s) => String(s || '').replace(/\s+/g, ' ').trim();
+const clip = (s, n) => {
+  const t = oneLine(s);
+  return t.length > n ? `${t.slice(0, n)}…` : t;
+};
 
 // ---------------------------------------------------------------- housekeeping
 function imageName(pid) {
@@ -73,8 +83,8 @@ let lastPids = '';
 function savePids() {
   const pids = [];
   for (const r of new Set(runners.values())) {
-    if (r.proc) pids.push(r.proc.pid);
-    if (r.retiring) pids.push(r.retiring.pid);
+    if (r.proc?.pid) pids.push(r.proc.pid);
+    if (r.retiring?.pid) pids.push(r.retiring.pid);
   }
   const key = pids.join(',');
   if (key === lastPids) return;
@@ -164,7 +174,7 @@ function summary(meta, windows = pcWindows()) {
   const eff = effective(meta.id);
   const w = windows.get(meta.id);
   return {
-    id: meta.id, title: meta.title, cwd: meta.cwd, folder: folderOf(meta.cwd), lastPrompt: meta.lastPrompt,
+    agent: 'claude', id: meta.id, title: meta.title, cwd: meta.cwd, folder: folderOf(meta.cwd), lastPrompt: meta.lastPrompt,
     lastReply: meta.lastReply, lastModel: meta.model ? modelName(meta.model) : '',
     updatedAt: Math.max(meta.updatedAt || 0, r && r.state === 'running' ? Date.now() : 0),
     model: eff.model, modelName: modelName(eff.model), effort: eff.effort,
@@ -177,6 +187,56 @@ function metaFor(id) {
   if (!file) return null;
   const st = fs.statSync(file);
   return sessionMeta({ id, file, key: path.basename(path.dirname(file)), mtime: st.mtimeMs, size: st.size });
+}
+
+// ---- Codex threads: the same summary, from the app server's thread list and the tail of the thread's rollout file
+function codexEffective(id, meta) {
+  const p = store.prefs[id] || {};
+  const d = hub.defaults();
+  const info = meta?.path ? rolloutInfo(meta.path) : null;
+  const model = p.model || meta?.model || info?.model || d.model;
+  return { model, effort: p.effort || meta?.effort || info?.effort || d.effort };
+}
+
+// A turn counts as running on the computer while its rollout says started-not-ended and the file still moves.
+function codexPcBusy(meta, info) {
+  const t = tails.get(meta.id);
+  if (t && t.agent === 'codex') return !!t.busy;
+  return !!(info?.busy && Date.now() - info.mtime < 15 * 60000);
+}
+
+function codexSummary(meta) {
+  const r = runners.get(meta.id);
+  const info = meta.path ? rolloutInfo(meta.path) : null;
+  const eff = codexEffective(meta.id, meta);
+  const running = r?.state === 'running';
+  return {
+    agent: 'codex', id: meta.id, title: clip(meta.name || meta.preview || info?.lastPrompt || '', 80), cwd: meta.cwd, folder: folderOf(meta.cwd),
+    lastPrompt: clip(info?.lastPrompt || meta.preview, 160), lastReply: clip(preview(info?.lastReply || ''), 200),
+    lastModel: hub.modelName(info?.model || meta.model || ''),
+    updatedAt: Math.max(meta.updatedAt || 0, info?.mtime || 0, running ? Date.now() : 0),
+    model: eff.model, modelName: hub.modelName(eff.model), effort: eff.effort,
+    state: r?.state || 'idle', queue: r?.queue.length || 0, openOnPc: false, pcBusy: !running && codexPcBusy(meta, info),
+  };
+}
+
+// Which agent a session id belongs to: a Claude Code transcript, or a Codex thread.
+async function agentOf(id) {
+  const r = runners.get(id);
+  if (r) return r.agent === 'codex' ? 'codex' : 'claude';
+  if (sessionFile(id)) return 'claude';
+  if (hub.available && await hub.lookup(id)) return 'codex';
+  return null;
+}
+
+async function codexModels() {
+  if (!hub.available) return [];
+  try {
+    return await hub.models();
+  } catch (e) {
+    log(`codex models: ${e.message}`);
+    return hub.modelsNow();
+  }
 }
 
 function sse(res, event, data) {
@@ -193,14 +253,21 @@ function deskUpdate(id) {
   if (!deskSubs.size) return;
   deskPending.add(id);
   if (deskTimer) return;
-  deskTimer = setTimeout(() => {
+  deskTimer = setTimeout(async () => {
     deskTimer = null;
     const windows = pcWindows();
-    for (const sid of deskPending) {
-      const meta = metaFor(sid);
-      if (meta && !meta.empty) for (const res of deskSubs) sse(res, 'session', summary(meta, windows));
-    }
+    const ids = [...deskPending];
     deskPending.clear();
+    for (const sid of ids) {
+      const meta = metaFor(sid);
+      if (meta && !meta.empty) {
+        for (const res of deskSubs) sse(res, 'session', summary(meta, windows));
+        continue;
+      }
+      if (!hub.available) continue;
+      const cm = hub.threads.has(sid) ? await hub.refresh(sid) : await hub.lookup(sid);
+      if (cm && !cm.sub) for (const res of deskSubs) sse(res, 'session', codexSummary(cm));
+    }
   }, 600);
 }
 
@@ -260,6 +327,92 @@ function stopTail(id) {
   const t = tails.get(id);
   if (t) clearInterval(t.timer);
   tails.delete(id);
+}
+
+// Codex turns that run on the computer (the Codex app, the codex CLI) show on the phone as they happen: follow the
+// thread's rollout file; its task_started / task_complete lines say whether a turn is running there.
+function startCodexTail(id, meta) {
+  if (tails.has(id) || !meta) return;
+  const file = meta.path || findRollout(id);          // a thread started a moment ago may not say where it writes yet
+  if (!file) return;
+  meta.path = file;
+  let size = 0;
+  try {
+    size = fs.statSync(file).size;
+  } catch {
+    return;
+  }
+  const info = rolloutInfo(file);
+  const t = { agent: 'codex', file, cwd: meta.cwd, pos: size, dec: new StringDecoder('utf8'), rest: '', busy: !!(info?.busy && Date.now() - info.mtime < 15 * 60000) };
+  t.timer = setInterval(() => pollCodexTail(id, t), CONFIG.limits.tailMs);
+  tails.set(id, t);
+}
+
+function pollCodexTail(id, t) {
+  let size;
+  try {
+    size = fs.statSync(t.file).size;
+  } catch {
+    return;
+  }
+  if (size < t.pos) {
+    t.pos = size;
+    t.rest = '';
+    return;
+  }
+  if (size === t.pos) return;
+  const len = Math.min(size - t.pos, 8 * 1024 * 1024);
+  const fd = fs.openSync(t.file, 'r');
+  const buf = Buffer.alloc(len);
+  try {
+    fs.readSync(fd, buf, 0, len, t.pos);
+  } finally {
+    fs.closeSync(fd);
+  }
+  t.pos += len;
+  const lines = (t.rest + t.dec.write(buf)).split('\n');
+  t.rest = lines.pop();
+  const ours = runners.get(id)?.state === 'running';    // the bridge's own stream already shows this turn
+  const evs = [];
+  let busy = t.busy;
+  for (const l of lines) {
+    if (!l.trim()) continue;
+    let o;
+    try {
+      o = JSON.parse(l);
+    } catch {
+      continue;
+    }
+    const mark = rolloutLineEvents(o, t.cwd, ours ? [] : evs);
+    if (mark === 'start' && !ours) busy = true;
+    else if (mark === 'end') busy = false;
+  }
+  for (const ev of evs) broadcast(id, 'ev', { ...ev, pc: true });
+  if (busy !== t.busy) {                                // after the events, so a reload on "done" finds them
+    t.busy = busy;
+    broadcast(id, 'tr', { k: 'pc', open: false, busy });
+    deskUpdate(id);
+  }
+}
+
+// The desk follows Codex threads too: a rollout file written anywhere under CODEX_HOME/sessions updates its card.
+function watchCodex() {
+  if (!hub.available) return;
+  const root = path.join(codexHome(), 'sessions');
+  try {
+    fs.mkdirSync(root, { recursive: true });
+    const seen = new Map();
+    fs.watch(root, { recursive: true }, (_, name) => {
+      const id = rolloutId(name);
+      if (!id || !deskSubs.size) return;
+      const last = seen.get(id) || 0;
+      if (Date.now() - last < 1500) return;
+      seen.set(id, Date.now());
+      deskUpdate(id);
+    });
+  } catch (e) {
+    log(`watching ${root} failed (${e.message}); Codex cards refresh with the list`);
+  }
 }
 
 // The session list on open phones follows changes to any transcript, and to which sessions are open or busy
@@ -350,20 +503,28 @@ function wire(r) {
     }
     if (!r.id || (subs.get(r.id) || new Set()).size > 0) return;
     const how = ev.ok ? 'done' : ['aborted_tools', 'aborted_streaming', 'stopped', 'interrupted'].includes(ev.reason) ? 'stopped' : 'failed';
-    const name = CONFIG.push.includeTitle ? (metaFor(r.id)?.title || '').slice(0, 24) : '';
+    const cm = r.agent === 'codex' ? hub.threads.get(r.id) : null;
+    const name = CONFIG.push.includeTitle ? String((cm ? cm.name || cm.preview : metaFor(r.id)?.title) || '').slice(0, 24) : '';
     push(store.settings, LANG === 'zh' ? '值班台' : 'Duty Desk', pushText(how, name, duration(ev.ms)), log);
   });
 }
 
-function runnerFor(id, meta) {
+function runnerFor(id, meta, agent = 'claude') {
   let r = runners.get(id);
   if (r) return r;
-  const eff = effective(id);
-  r = new Runner({ id, cwd: meta.cwd, model: eff.model, effort: eff.effort, phoneNote: store.settings.phoneNote, idleMinutes: CONFIG.limits.idleMinutes }, log);
+  if (agent === 'codex') {
+    const eff = codexEffective(id, meta);
+    r = new CodexRunner({ id, cwd: meta.cwd, model: eff.model, effort: eff.effort, phoneNote: store.settings.phoneNote, idleMinutes: CONFIG.limits.idleMinutes }, hub, log);
+  } else {
+    const eff = effective(id);
+    r = new Runner({ id, cwd: meta.cwd, model: eff.model, effort: eff.effort, phoneNote: store.settings.phoneNote, idleMinutes: CONFIG.limits.idleMinutes }, log);
+  }
   wire(r);
   runners.set(id, r);
   return r;
 }
+
+const uploadPaths = (names) => names.map((n) => path.join(DATA_DIR, 'uploads', ...n.split('/')));
 
 function takeImages(list) {
   const key = crypto.randomBytes(6).toString('hex');
@@ -639,7 +800,7 @@ function pcState() {
     devices: store.devices.map(({ id, name, createdAt, lastSeenAt }) => ({ id, name, createdAt, lastSeenAt })),
     running: all.filter((r) => r.state === 'running').length,
     live: all.filter((r) => r.proc).length,
-    version: VERSION, claude: claudeCommand().version, push: hasPush(),
+    version: VERSION, claude: claudeCommand().version, codex: hub.version, push: hasPush(),
   };
 }
 
@@ -681,6 +842,122 @@ async function handlePc(req, res, url) {
   return json(res, 404, { error: 'not found' });
 }
 
+// ---------------------------------------------------------------- Codex sessions from the phone
+async function codexChoice(b, meta) {
+  const models = await codexModels();
+  const cur = meta ? codexEffective(meta.id, meta) : hub.defaults();
+  const model = models.some((x) => x.id === b.model) ? b.model : cur.model;
+  const efforts = models.find((x) => x.id === model)?.efforts || [];
+  const effort = typeof b.effort === 'string' && (efforts.includes(b.effort) || (!efforts.length && /^[a-z]+$/.test(b.effort))) ? b.effort : cur.effort;
+  return { model, effort };
+}
+
+async function newCodexSession(res, b, cwd) {
+  if (!hub.available) return json(res, 400, { error: 'codex_unavailable' });
+  const { model, effort } = await codexChoice(b, null);
+  const text = String(b.text || '').slice(0, 20000).trim();
+  const { names } = takeImages(b.images);
+  if (!text && !names.length) return json(res, 400, { error: 'empty' });
+  const r = new CodexRunner({ id: null, cwd, model, effort, phoneNote: store.settings.phoneNote, idleMinutes: CONFIG.limits.idleMinutes }, hub, log);
+  wire(r);
+  ensureCapacity(r);
+  const started = await new Promise((resolve) => {
+    let timer = null;
+    const done = (v) => { clearTimeout(timer); resolve(v); };
+    timer = setTimeout(() => done({ error: 'timeout' }), 60000);
+    r.once('init', (id) => done({ id }));
+    r.once('failed', () => done({ error: 'failed' }));
+    r.once('finished', (ev) => { if (!r.id) done({ error: ev.reason || 'failed' }); });
+    r.enqueue({ text: text || (LANG === 'zh' ? '（见图）' : '(see the picture)'), images: uploadPaths(names) }, { text, images: names });
+  });
+  if (started.error) {
+    log(`a new Codex thread failed to start: ${started.error}`);
+    return json(res, 502, { error: started.error, detail: r.notes.map((n) => n.text).join('\n') });
+  }
+  return json(res, 200, { id: started.id, agent: 'codex' });
+}
+
+async function handleCodexSession(req, res, url, id, sub) {
+  const method = req.method;
+  const r0 = runners.get(id);
+  let meta = hub.threads.get(id) || (await hub.lookup(id));
+  if (meta && !meta.path) meta = (await hub.refresh(id)) || meta;
+  meta = meta
+    || (r0 ? { id, cwd: r0.cwd, name: '', preview: '', model: r0.model, effort: r0.effort, path: '', updatedAt: Date.now() } : null);
+  if (!meta) return json(res, 404, { error: 'no_session' });
+
+  if (method === 'GET' && sub === '') {
+    let page = { events: [], cursor: null, hasMore: false };
+    try {
+      page = await hub.history(id, { want: 140 });
+    } catch (e) {
+      log(`codex history ${id}: ${e.message}`);
+    }
+    const r = runners.get(id);
+    const since = page.events.length ? page.events[0].t : 0;
+    const notes = r ? r.notes.filter((n) => n.t >= since && !r.live.includes(n)) : [];
+    const events = [...page.events, ...notes].sort((a, b) => (a.t || 0) - (b.t || 0));
+    return json(res, 200, { session: codexSummary(meta), events, cursor: page.cursor, hasMore: page.hasMore });
+  }
+  if (method === 'GET' && sub === '/history') {
+    const before = url.searchParams.get('before');
+    if (!before) return json(res, 400, { error: 'bad_cursor' });
+    try {
+      return json(res, 200, await hub.history(id, { cursor: before, want: 140 }));
+    } catch (e) {
+      return json(res, 502, { error: 'codex', detail: e.message });
+    }
+  }
+  if (method === 'GET' && sub === '/stream') {
+    openSse(req, res);
+    const r = runners.get(id);
+    startCodexTail(id, meta);
+    sse(res, 'tr', { k: 'state', state: r?.state || 'idle', queue: r?.queue.length || 0 });
+    sse(res, 'tr', { k: 'pc', open: false, busy: r?.state === 'running' ? false : !!tails.get(id)?.busy });
+    if (r) {
+      for (const ev of r.live) sse(res, 'ev', ev);
+      if (r.state === 'running') sse(res, 'tr', { k: 'live', text: r.liveText || '', activity: r.activity || null, since: r.turn?.start || Date.now() });
+    }
+    if (!subs.has(id)) subs.set(id, new Set());
+    subs.get(id).add(res);
+    req.on('close', () => {
+      subs.get(id)?.delete(res);
+      stopTail(id);
+    });
+    return undefined;
+  }
+  if (method === 'POST' && sub === '/messages') {
+    const b = await readBody(req);
+    const text = String(b.text || '').slice(0, 20000).trim();
+    const { names } = takeImages(b.images);
+    if (!text && !names.length) return json(res, 400, { error: 'empty' });
+    if (!fs.existsSync(meta.cwd)) return json(res, 400, { error: 'no_such_dir', cwd: meta.cwd });
+    const r = runnerFor(id, meta, 'codex');
+    if (r.state !== 'running' && tails.get(id)?.busy) return json(res, 409, { error: 'pc_busy' });
+    if (!r.proc) ensureCapacity(r);
+    const out = r.enqueue({ text: text || (LANG === 'zh' ? '（见图）' : '(see the picture)'), images: uploadPaths(names) }, { text, images: names });
+    deskUpdate(id);
+    return json(res, 200, out);
+  }
+  if (method === 'POST' && sub === '/interrupt') {
+    const r = runners.get(id);
+    return json(res, 200, { ok: r ? r.interrupt() : false });
+  }
+  if (method === 'PUT' && sub === '/prefs') {
+    const b = await readBody(req);
+    const next = await codexChoice(b, meta);
+    store.prefs[id] = next;
+    store.savePrefs();
+    const r = runners.get(id);
+    if (r) {
+      r.model = next.model;
+      r.effort = next.effort;
+    }
+    return json(res, 200, { session: codexSummary(meta) });
+  }
+  return json(res, 404, { error: 'not_found' });
+}
+
 // ---------------------------------------------------------------- the phone's API
 function publicSettings() {
   const s = store.settings;
@@ -717,15 +994,23 @@ async function handleApi(req, res, url, ip) {
   }
   if (method === 'GET' && p === '/api/state') {
     const d = defaults();
+    const claudeDefaults = { model: d.model, modelName: modelName(d.model), effort: effortFor(d.model) };
+    const cmodels = await codexModels();
+    const cd = hub.available ? hub.defaults() : null;
+    const codex = hub.available && cmodels.length
+      ? { available: true, version: hub.version, models: cmodels, defaults: { model: cd.model, modelName: hub.modelName(cd.model), effort: cd.effort }, resume: CONFIG.codex.resumeCommand }
+      : { available: false, reason: hub.reason || 'unavailable' };
     return json(res, 200, {
       settings: publicSettings(),
       server: {
         lang: LANG, version: VERSION, host: os.hostname(), port: CONFIG.port, scheme: TLS ? 'https' : 'http', addresses: addresses(), claude: claudeCommand().version,
+        codex: codex.available ? codex.version : '',
         timeZone: CONFIG.timeZone, theme: { default: CONFIG.theme, light: themeFor('light'), dark: themeFor('dark') }, resume: CONFIG.claude.resumeCommand,
       },
       device: { id: device.id, name: device.name },
       models: MODELS, efforts: EFFORTS, themes: themes(),
-      defaults: { model: d.model, modelName: modelName(d.model), effort: effortFor(d.model) },
+      defaults: claudeDefaults,
+      agents: { claude: { available: true, models: MODELS, efforts: EFFORTS, defaults: claudeDefaults, resume: CONFIG.claude.resumeCommand }, codex },
     });
   }
   if (method === 'PUT' && p === '/api/settings') {
@@ -773,7 +1058,17 @@ async function handleApi(req, res, url, ip) {
   if (method === 'GET' && p === '/api/sessions') {
     const windows = pcWindows();
     const limit = Math.min(200, Number(url.searchParams.get('limit')) || 80);
-    return json(res, 200, { sessions: listSessions(limit).map((m) => summary(m, windows)) });
+    const which = url.searchParams.get('agent') || 'all';
+    const out = which === 'codex' ? [] : listSessions(limit).map((m) => summary(m, windows));
+    if (which !== 'claude' && hub.available) {
+      try {
+        for (const m of await hub.listThreads(limit)) out.push(codexSummary(m));
+      } catch (e) {
+        log(`codex thread list: ${e.message}`);
+      }
+    }
+    out.sort((a, b) => b.updatedAt - a.updatedAt);
+    return json(res, 200, { sessions: out.slice(0, limit) });
   }
   if (method === 'GET' && p === '/api/stream') {
     openSse(req, res);
@@ -786,6 +1081,7 @@ async function handleApi(req, res, url, ip) {
     const cwd = path.resolve(String(b.cwd || ''));
     if (!b.cwd || !fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) return json(res, 400, { error: 'no_such_dir' });
     if (!inRoots(cwd)) return json(res, 403, { error: 'outside_roots' });
+    if (b.agent === 'codex') return newCodexSession(res, b, cwd);
     const d = defaults();
     const model = MODELS.some((m) => m.id === b.model) ? b.model : d.model;
     const effort = EFFORTS.includes(b.effort) ? b.effort : effortFor(model);
@@ -816,6 +1112,7 @@ async function handleApi(req, res, url, ip) {
   if (!m || !SID.test(m[1])) return json(res, 404, { error: 'not_found' });
   const id = m[1].toLowerCase();
   const sub = m[2] || '';
+  if ((await agentOf(id)) === 'codex') return handleCodexSession(req, res, url, id, sub);
   const meta = metaFor(id) || (runners.get(id) ? { id, cwd: runners.get(id).cwd, title: '', model: runners.get(id).model } : null);
   if (!meta) return json(res, 404, { error: 'no_session' });
   const file = sessionFile(id);
@@ -933,7 +1230,8 @@ function shutdown(sig) {
   log(`stopping (${sig})`);
   for (const r of new Set(runners.values())) r.close('shutdown');
   setTimeout(async () => {
-    for (const r of new Set(runners.values())) if (r.proc) await killTree(r.proc.pid);
+    for (const r of new Set(runners.values())) if (r.proc?.pid) await killTree(r.proc.pid);
+    await hub.stop();
     process.exit(0);
   }, 3000);
 }
@@ -946,6 +1244,7 @@ detectVersion();
 cleanUploads();
 setInterval(cleanUploads, 6 * 3600 * 1000).unref();
 watchProjects();
+watchCodex();
 server.listen(CONFIG.port, CONFIG.host, () => {
   const where = addresses().map((a) => `${TLS ? 'https' : 'http'}://${a.address}:${CONFIG.port}/`).join('  ');
   log(`cc-phone-bridge ${VERSION} on ${CONFIG.port} (${where}); data ${DATA_DIR}; config ${fs.existsSync(CONFIG_FILE) ? CONFIG_FILE : 'defaults'}; sessions ${configDir()}`);

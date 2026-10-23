@@ -19,7 +19,7 @@ const CWD = path.join(PROJ, 'demo');
 fs.mkdirSync(CWD);
 const OUTSIDE = fs.mkdtempSync(path.join(os.tmpdir(), 'ccpb-outside-'));
 const SUGG = path.join(DATA, 'suggestions.json');
-fs.writeFileSync(path.join(DATA, 'config.json'), JSON.stringify({ roots: [PROJ], timeZone: 'America/Los_Angeles', suggestions: { file: SUGG } }));
+fs.writeFileSync(path.join(DATA, 'config.json'), JSON.stringify({ roots: [PROJ], timeZone: 'America/Los_Angeles', suggestions: { file: SUGG }, codex: { enabled: false } }));
 fs.writeFileSync(path.join(DATA, 'settings.json'), JSON.stringify({ pushOnFinish: false }));
 fs.writeFileSync(path.join(CONF, 'settings.json'), JSON.stringify({ model: 'opus', modelSettings: { 'claude-opus-5-5': { effortLevel: 'xhigh' } } }));
 process.env.CCPB_CONFIG_DIR = CONF;

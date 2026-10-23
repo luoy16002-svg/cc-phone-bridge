@@ -18,6 +18,13 @@
     "env": {},
     "resumeCommand": "claude --resume {id}"
   },
+  "codex": {
+    "enabled": true,
+    "command": "codex",
+    "args": [],
+    "home": "",
+    "resumeCommand": "codex resume {id}"
+  },
   "models": [
     {
       "id": "claude-opus-5-5",
