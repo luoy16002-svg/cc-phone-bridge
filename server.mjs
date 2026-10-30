@@ -19,6 +19,7 @@ import { isLoopback, isPrivate, hostAllowed, addresses } from './lib/net.mjs';
 import { configDir, projectKey, listSessions, sessionFile, sessionMeta, historyPage, lineEvents, preview, parentOf } from './lib/transcripts.mjs';
 import { CodexHub, CodexRunner, rolloutInfo, rolloutLineEvents, rolloutId, codexHome, findRollout, threadLock, lockDir } from './lib/codex.mjs';
 import { push, hasPush } from './lib/push.mjs';
+import { windows as windowList, typeInto, messageSteps, stopSteps, normPrompt, helper as typeHelper, typingEnabled } from './lib/pcwindow.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC = path.join(HERE, 'public');
@@ -135,30 +136,23 @@ function effortFor(model) {
   return EFFORTS.includes(e) ? e : 'high';
 }
 
-// Sessions open in a Claude Code window on this computer right now, and whether each is busy.
-function pcWindows() {
-  const out = new Map();
-  const dir = path.join(configDir(), 'sessions');
-  let files = [];
-  try {
-    files = fs.readdirSync(dir).filter((f) => f.endsWith('.json'));
-  } catch {
-    return out;
+// Sessions open in a Claude Code window on this computer right now: whether each is busy, waiting for an answer
+// in the window, and whether the phone can type into it. The phone's own runs are not windows.
+function ownPids() {
+  const s = new Set();
+  for (const r of new Set(runners.values())) {
+    if (r.proc?.pid) s.add(r.proc.pid);
+    if (r.retiring?.pid) s.add(r.retiring.pid);
   }
-  for (const f of files) {
-    try {
-      const s = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
-      if (s.kind !== 'interactive' || !s.sessionId) continue;
-      try {
-        process.kill(s.pid, 0);
-      } catch (e) {
-        if (e.code !== 'EPERM') continue;
-      }
-      out.set(s.sessionId, { busy: s.status === 'busy' });
-    } catch { /* being rewritten */ }
-  }
-  return out;
+  return s;
 }
+
+function pcWindows() {
+  return windowList(ownPids());
+}
+
+// What the phone shows about the computer's side of a Claude Code conversation.
+const pcInfo = (w) => ({ k: 'pc', open: !!w, busy: !!w?.busy, waiting: !!w?.waiting, waitingFor: w?.waitingFor || '', typable: !!w?.typable });
 
 // Like `claude --resume` on the computer: its current model and effort, unless the phone chose others.
 function effective(id) {
@@ -178,7 +172,8 @@ function summary(meta, windows = pcWindows()) {
     lastReply: meta.lastReply, lastModel: meta.model ? modelName(meta.model) : '',
     updatedAt: Math.max(meta.updatedAt || 0, r && r.state === 'running' ? Date.now() : 0),
     model: eff.model, modelName: modelName(eff.model), effort: eff.effort,
-    state: r?.state || 'idle', queue: r?.queue.length || 0, openOnPc: !!w, pcBusy: !!w?.busy,
+    state: r?.state || 'idle', queue: r?.queue.length || 0, openOnPc: !!w, pcBusy: !!w?.busy, pcWaiting: !!w?.waiting,
+    pcWaitingFor: w?.waitingFor || '', pcTypable: !!w?.typable,
   };
 }
 
@@ -312,11 +307,14 @@ function startTail(id) {
 
 function pollTail(id, t) {
   const w = pcWindows().get(id);
-  const busy = !!w?.busy;
-  if (busy !== t.busy) {
-    t.busy = busy;
-    broadcast(id, 'tr', { k: 'pc', open: !!w, busy });
+  const info = pcInfo(w);
+  const key = JSON.stringify(info);
+  if (key !== t.pcKey) {
+    t.pcKey = key;
+    t.busy = info.busy;
+    broadcast(id, 'tr', info);
   }
+  expirePending(id);
   let size;
   try {
     size = fs.statSync(t.file).size;
@@ -340,22 +338,158 @@ function pollTail(id, t) {
   t.pos += len;
   const lines = (t.rest + t.dec.write(buf)).split('\n');
   t.rest = lines.pop();
-  if (runners.get(id)?.state === 'running') return;      // the bridge's own stream already shows this turn
+  // The bridge's own stream shows the phone's turns; the transcript only fills in what that stream has not said, so a
+  // reply still arrives when Claude Code's output stalls.
+  const r = runners.get(id);
+  const ours = r?.state === 'running';
+  const shown = ours ? new Set(r.live.map((e) => e.id)) : null;
   const evs = [];
   for (const l of lines) {
     if (!l.trim()) continue;
+    let o;
     try {
-      lineEvents(JSON.parse(l), evs);
-    } catch { /* a half-written line */ }
+      o = JSON.parse(l);
+    } catch {
+      continue;                                          // a half-written line
+    }
+    if (o.type === 'queue-operation' && o.operation === 'enqueue') pendingQueued(id, o.content);
+    lineEvents(o, evs);
   }
-  for (const ev of evs) broadcast(id, 'ev', { ...ev, pc: true });
+  for (const ev of evs) {
+    if (ev.k === 'user') pendingArrived(id, ev);
+    if (shown?.has(ev.id)) continue;
+    broadcast(id, 'ev', ours ? ev : { ...ev, pc: true });
+  }
 }
 
+// A followed file stays followed while a phone watches it, or while a message typed into its window waits to show.
 function stopTail(id) {
-  if ((subs.get(id) || new Set()).size) return;
+  if ((subs.get(id) || new Set()).size || pcPending.get(id)?.length) return;
   const t = tails.get(id);
   if (t) clearInterval(t.timer);
   tails.delete(id);
+}
+
+// ---------------------------------------------------------------- messages typed into a window on the computer
+// Each waits here until the window's transcript has it: a message taken in at once is a new prompt in the file; one
+// typed while a turn runs is first written as a queue entry, then taken in at the next step. One the window never
+// takes in (it was showing something else) is reported to the phone as not delivered.
+const pcPending = new Map();
+const DELIVER_MS = Number(process.env.CCPB_DELIVER_MS) || 12000;
+const PENDING_MAX_MS = 6 * 3600 * 1000;
+
+function pendingList(id) {
+  if (!pcPending.has(id)) pcPending.set(id, []);
+  return pcPending.get(id);
+}
+
+function pendingUpdate(id, p) {
+  broadcast(id, 'ev', p.ev);
+  deskUpdate(id);
+}
+
+function pendingDone(id, p) {
+  const list = pcPending.get(id) || [];
+  const i = list.indexOf(p);
+  if (i >= 0) list.splice(i, 1);
+  if (!list.length) pcPending.delete(id);
+  clearTimeout(p.timer);
+  broadcast(id, 'ev', { k: 'drop', id: p.ev.id });
+  stopTail(id);
+}
+
+// The same words (a message of pictures only: some picture), as the window wrote them down.
+const pendingMatch = (p, text, images) => p.norm === normPrompt(text) && (p.norm !== '' || images > 0);
+
+function pendingQueued(id, content) {
+  const text = typeof content === 'string' ? content : '';
+  const p = (pcPending.get(id) || []).find((x) => x.ev.state === 'pc' && pendingMatch(x, text, /\[Image #\d+\]/.test(text) ? 1 : 0));
+  if (!p) return;
+  clearTimeout(p.timer);
+  p.ev = { ...p.ev, state: 'pc_queued' };
+  pendingUpdate(id, p);
+}
+
+// Also one already reported as not delivered: on a slow computer it can land after the wait ran out.
+function pendingArrived(id, ev) {
+  const p = (pcPending.get(id) || []).find((x) => pendingMatch(x, ev.text, ev.images));
+  if (p) pendingDone(id, p);
+}
+
+function expirePending(id) {
+  for (const p of [...(pcPending.get(id) || [])]) {
+    if (Date.now() - p.ev.t > PENDING_MAX_MS) pendingDone(id, p);
+  }
+}
+
+function pendingFailed(id, p) {
+  if (p.ev.state !== 'pc') return;
+  p.ev = { ...p.ev, state: 'pc_failed' };
+  pendingUpdate(id, p);
+  log(`session ${id}: the window did not take in a message typed from the phone`);
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Turns the phone started in a window on the computer: the window runs them, so the phone learns that one ended from
+// the window's status, and gets the same note as for a turn of its own.
+const typedTurns = new Map();
+const TYPED_MAX_MS = 12 * 3600 * 1000;
+
+function typedTurnCheck(windows) {
+  for (const [id, turn] of typedTurns) {
+    const w = windows.get(id);
+    if (w?.busy) turn.busy = true;
+    if (Date.now() - turn.at > TYPED_MAX_MS) typedTurns.delete(id);
+    else if (turn.busy && !w?.busy && !w?.waiting) {
+      typedTurns.delete(id);
+      if (!watching(id)) notifyFinished(id, 'done', Date.now() - turn.at);
+    }
+  }
+}
+
+// Types the message into the window holding the conversation. Returns { id } or { error, detail }.
+async function typeIntoWindow(id, w, text, names) {
+  const want = path.basename(claudeCommand().bin).toLowerCase();
+  const image = await imageName(w.pid);
+  if (image && want.endsWith('.exe') && image !== want) return { error: 'pc_unreachable', detail: 'not_claude' };
+  const { steps, after } = messageSteps(text, uploadPaths(names));
+  const ev = { k: 'user', id: `pc-${crypto.randomBytes(6).toString('hex')}`, t: Date.now(), text, images: names, pending: true, state: 'pc' };
+  const p = { ev, norm: normPrompt(text), images: names.length };
+  pendingList(id).push(p);
+  startTail(id);
+  const res = await typeInto(w.pid, steps);
+  if (!res.ok) {
+    pendingDone(id, p);
+    log(`session ${id}: typing into its window (pid ${w.pid}) failed: ${res.code}${res.detail ? ` ${res.detail}` : ''}`);
+    return { error: 'pc_unreachable', detail: String(res.code) };
+  }
+  log(`session ${id}: a message from the phone typed into its window (pid ${w.pid})`);
+  typedTurns.set(id, { at: Date.now(), busy: !!w.busy });
+  broadcast(id, 'ev', ev);
+  deskUpdate(id);
+  p.timer = setTimeout(() => pendingFailed(id, p), DELIVER_MS);
+  if (after) {
+    // a slash command does not give the box back by itself: fetch it, unless the command opened something
+    await sleep(900);
+    const w2 = pcWindows().get(id);
+    if (w2 && !w2.waiting) await typeInto(w.pid, after);
+  }
+  // the phone's own run of this conversation, if one is still open, has an old view of it now: let it go
+  const r = runners.get(id);
+  if (r && r.proc && r.state !== 'running' && !r.hasBackground?.()) r.close('a window on the computer has it');
+  return { id: ev.id };
+}
+
+// What the phone shows of a Claude Code conversation that the transcript does not have yet: its messages waiting
+// in the phone's own run, and messages typed into the window that it has not taken in.
+function pendingEvents(id, page) {
+  const have = new Set(page.map((e) => e.id));
+  const r = runners.get(id);
+  const out = [];
+  if (r) for (const e of r.live) if (e.k === 'user' && e.state && e.state !== 'canceled' && !have.has(e.id)) out.push(e);
+  for (const p of pcPending.get(id) || []) out.push(p.ev);
+  return out;
 }
 
 // Codex turns that run on the computer (the Codex app, the codex CLI) show on the phone as they happen: follow the
@@ -515,9 +649,12 @@ function watchProjects() {
     timer = null;
     const now = pcWindows();
     for (const id of new Set([...now.keys(), ...last.keys()])) {
-      if (now.get(id)?.busy !== last.get(id)?.busy || !now.has(id) || !last.has(id)) deskUpdate(id);
+      if (JSON.stringify(pcInfo(now.get(id))) === JSON.stringify(pcInfo(last.get(id)))) continue;
+      deskUpdate(id);
+      if (tails.has(id)) pollSoon(id);                 // an open conversation hears of it at once
     }
     last = now;
+    typedTurnCheck(now);
   };
   try {
     fs.mkdirSync(dir, { recursive: true });
@@ -525,13 +662,18 @@ function watchProjects() {
   } catch (e) {
     log(`watching ${dir} failed (${e.message})`);
   }
+  // a window's status file can change unnoticed: while a turn from the phone runs there, look now and then as well
+  setInterval(() => { if (typedTurns.size && !timer) check(); }, 5000).unref();
 }
 
 function ensureCapacity(except) {
   const live = [...new Set(runners.values())].filter((r) => r.proc && r !== except);
   const max = Math.max(1, CONFIG.limits.maxLive);
   if (live.length < max) return;
-  const idle = live.filter((r) => r.state !== 'running').sort((a, b) => a.lastUsed - b.lastUsed);
+  // the ones least recently used go first, those with background work still out last
+  const idle = live.filter((r) => r.state !== 'running')
+    .map((r) => ({ r, bg: r.hasBackground?.() ? 1 : 0 }))
+    .sort((a, b) => a.bg - b.bg || a.r.lastUsed - b.r.lastUsed).map((x) => x.r);
   for (const r of idle.slice(0, live.length - max + 1)) r.close('making room');
 }
 
@@ -552,6 +694,24 @@ function pushText(how, name, took) {
   const what = { done: 'finished', stopped: 'was stopped', failed: 'did not finish' }[how];
   return `${name ? `“${name}”` : 'A conversation'} ${what} after ${took}`;
 }
+
+function notifyFinished(id, how, ms) {
+  const cm = hub.threads.get(id);
+  const name = CONFIG.push.includeTitle ? String((cm ? cm.name || cm.preview : metaFor(id)?.title) || '').slice(0, 24) : '';
+  push(store.settings, LANG === 'zh' ? '值班台' : 'Duty Desk', pushText(how, name, duration(ms)), log);
+}
+
+// Who is looking at a conversation: an open page says so every few seconds while it is on screen. An open stream alone
+// proves nothing, because a phone that has put the page away can leave its connection open for minutes.
+const lookers = new Map();
+const LOOK_MS = 30000;
+
+function looking(device, id) {
+  for (const [k, v] of lookers) if (v.device === device || Date.now() - v.at > LOOK_MS) lookers.delete(k);
+  if (id) lookers.set(`${device}:${id}`, { device, id, at: Date.now() });
+}
+
+const watching = (id) => [...lookers.values()].some((v) => v.id === id && Date.now() - v.at < LOOK_MS);
 
 function wire(r) {
   r.on('event', (ev) => r.id && broadcast(r.id, 'ev', ev));
@@ -585,15 +745,14 @@ function wire(r) {
         t.rest = '';
       } catch { /* gone */ }
     }
-    if (r.prefsChanged) {
+    if (r.prefsChanged && r.restartWhenFree) r.restartWhenFree();
+    else if (r.prefsChanged) {
       r.prefsChanged = false;
       r.close('model or effort changed');
     }
-    if (!r.id || (subs.get(r.id) || new Set()).size > 0) return;
+    if (!r.id || watching(r.id)) return;
     const how = ev.ok ? 'done' : ['aborted_tools', 'aborted_streaming', 'stopped', 'interrupted'].includes(ev.reason) ? 'stopped' : 'failed';
-    const cm = r.agent === 'codex' ? hub.threads.get(r.id) : null;
-    const name = CONFIG.push.includeTitle ? String((cm ? cm.name || cm.preview : metaFor(r.id)?.title) || '').slice(0, 24) : '';
-    push(store.settings, LANG === 'zh' ? '值班台' : 'Duty Desk', pushText(how, name, duration(ev.ms)), log);
+    notifyFinished(r.id, how, ev.ms);
   });
 }
 
@@ -808,10 +967,42 @@ function deviceFor(req) {
   return d;
 }
 
+// A phone on a shaky network cannot tell whether a message got through when the answer never came, so it sends the
+// same request again under the same X-Cid: the first answer is replayed and nothing runs twice.
+const replies = new Map();
+const REPLY_MS = 15 * 60000;
+
+function replayed(req, res, device) {
+  const cid = String(req.headers['x-cid'] || '');
+  if (req.method !== 'POST' || !/^[\w-]{8,64}$/.test(cid)) return null;
+  const key = `${device.id}:${cid}`;
+  for (const [k, v] of replies) if (Date.now() - v.at > REPLY_MS) replies.delete(k);
+  const seen = replies.get(key);
+  if (seen) return seen.done;
+  const entry = { at: Date.now() };
+  entry.done = new Promise((resolve) => {
+    const { writeHead, end } = res;
+    let status = 200;
+    let headers = {};
+    res.writeHead = (code, h) => {
+      status = code;
+      headers = h || {};
+      return writeHead.call(res, code, h);
+    };
+    res.end = (body) => {
+      if (status >= 500) replies.delete(key);                   // nothing happened: a second try may run
+      resolve({ status, headers, body });
+      return end.call(res, body);
+    };
+  });
+  replies.set(key, entry);
+  return null;
+}
+
 function openSse(req, res) {
   res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-store, no-transform', Connection: 'keep-alive', ...SECURITY });
   res.write(': open\n\n');
-  const hb = setInterval(() => res.write(': ping\n\n'), 15000);
+  const hb = setInterval(() => res.write(': ping\n\n'), 10000);
   req.on('close', () => clearInterval(hb));
 }
 
@@ -1142,6 +1333,18 @@ async function handleApi(req, res, url, ip) {
   const device = deviceFor(req);
   if (!device) return json(res, 401, { error: 'unpaired' });
 
+  const again = replayed(req, res, device);
+  if (again) {
+    const first = await again;
+    res.writeHead(first.status, first.headers);
+    return res.end(first.body);
+  }
+
+  if (method === 'POST' && p === '/api/here') {
+    const b = await readBody(req);
+    looking(device.id, SID.test(String(b.id || '')) ? String(b.id).toLowerCase() : null);
+    return json(res, 200, { ok: true });
+  }
   if (method === 'POST' && p === '/api/pair/code') return json(res, 200, pairing.rotate());
   if (method === 'DELETE' && p === '/api/me') {
     store.devices = store.devices.filter((d) => d.id !== device.id);
@@ -1162,6 +1365,7 @@ async function handleApi(req, res, url, ip) {
         lang: LANG, version: VERSION, host: os.hostname(), port: CONFIG.port, scheme: TLS ? 'https' : 'http', addresses: addresses(), claude: claudeCommand().version,
         codex: codex.available ? codex.version : '',
         timeZone: CONFIG.timeZone, theme: { default: CONFIG.theme, light: themeFor('light'), dark: themeFor('dark') }, resume: CONFIG.claude.resumeCommand,
+        typing: typingEnabled() && !!(await typeHelper()),
       },
       device: { id: device.id, name: device.name },
       models: MODELS, efforts: EFFORTS, themes: themes(),
@@ -1268,7 +1472,8 @@ async function handleApi(req, res, url, ip) {
     const r = runners.get(id);
     const since = page.events.length ? page.events[0].t : 0;
     const notes = r ? r.notes.filter((n) => n.t >= since && !r.live.includes(n)) : [];
-    const events = [...page.events, ...notes].sort((a, b) => (a.t || 0) - (b.t || 0));
+    // messages sent from the phone that the transcript does not hold yet stay in the history the phone gets
+    const events = [...page.events, ...notes, ...pendingEvents(id, page.events)].sort((a, b) => (a.t || 0) - (b.t || 0));
     return json(res, 200, { session: { ...summary(meta), from: await branchOrigin(id) }, events, cursor: page.cursor, hasMore: page.hasMore });
   }
   if (method === 'GET' && sub === '/history') {
@@ -1281,11 +1486,12 @@ async function handleApi(req, res, url, ip) {
     const r = runners.get(id);
     const w = pcWindows().get(id);
     sse(res, 'tr', { k: 'state', state: r?.state || 'idle', queue: r?.queue.length || 0 });
-    sse(res, 'tr', { k: 'pc', open: !!w, busy: !!w?.busy });
+    sse(res, 'tr', pcInfo(w));
     if (r) {
       for (const ev of r.live) sse(res, 'ev', ev);
       if (r.state === 'running') sse(res, 'tr', { k: 'live', text: r.liveText || '', activity: r.activity || null, since: r.turn?.start || Date.now() });
     }
+    for (const p of pcPending.get(id) || []) sse(res, 'ev', p.ev);
     if (!subs.has(id)) subs.set(id, new Set());
     subs.get(id).add(res);
     startTail(id);
@@ -1301,6 +1507,16 @@ async function handleApi(req, res, url, ip) {
     const { names, blocks } = takeImages(b.images);
     if (!text && !names.length) return json(res, 400, { error: 'empty' });
     if (!fs.existsSync(meta.cwd)) return json(res, 400, { error: 'no_such_dir', cwd: meta.cwd });
+    // Open in a window on this computer: type it into that window, so the window runs it and shows it, unless the
+    // phone's own run of it is in the middle of a turn, or the person chose to go on in the background anyway.
+    const r0 = runners.get(id);
+    const w = pcWindows().get(id);
+    if (w?.typable && !b.background && r0?.state !== 'running') {
+      if (w.waiting) return json(res, 409, { error: 'pc_waiting', waitingFor: w.waitingFor });
+      const out = await typeIntoWindow(id, w, text, names);
+      if (out.error) return json(res, 502, out);
+      return json(res, 200, { ...out, via: 'pc' });
+    }
     const r = runnerFor(id, meta);
     if (!r.proc) ensureCapacity(r);
     const out = r.enqueue(messageContent(text, blocks), { text, images: names });
@@ -1310,6 +1526,14 @@ async function handleApi(req, res, url, ip) {
   if (method === 'POST' && sub === '/fork') return branchFrom(req, res, id, 'claude', meta);
   if (method === 'POST' && sub === '/interrupt') {
     const r = runners.get(id);
+    if (r?.state === 'running') return json(res, 200, { ok: r.interrupt() });
+    // a turn running in the window on the computer: Esc there, as on the keyboard
+    const w = pcWindows().get(id);
+    if (w?.busy && w.typable) {
+      const done = await typeInto(w.pid, stopSteps());
+      if (!done.ok) log(`session ${id}: Esc into its window failed: ${done.code}`);
+      return json(res, 200, { ok: done.ok, via: 'pc' });
+    }
     return json(res, 200, { ok: r ? r.interrupt() : false });
   }
   if (method === 'PUT' && sub === '/prefs') {
@@ -1319,13 +1543,14 @@ async function handleApi(req, res, url, ip) {
     store.prefs[id] = { ...store.prefs[id], ...next };
     store.savePrefs();
     const r = runners.get(id);
+    let deferred = '';
     if (r && (r.model !== next.model || r.effort !== next.effort)) {
       r.model = next.model;
       r.effort = next.effort;
       if (r.state === 'running') r.prefsChanged = true;
-      else r.close('model or effort changed');
+      else if (!r.restartWhenFree()) deferred = 'background';
     }
-    return json(res, 200, { session: summary(meta) });
+    return json(res, 200, { session: summary(meta), ...(deferred ? { deferred } : {}) });
   }
   return json(res, 404, { error: 'not_found' });
 }
@@ -1388,6 +1613,10 @@ process.on('uncaughtException', (e) => log(`uncaught ${e.stack || e.message}`));
 
 await reapOrphans();
 detectVersion();
+if (typingEnabled()) {
+  typeHelper().then((h) => log(h ? 'typing into Claude Code windows: ready'
+    : 'typing into Claude Code windows: the helper could not be built, so conversations open in a window run on their own'));
+}
 cleanUploads();
 setInterval(cleanUploads, 6 * 3600 * 1000).unref();
 watchProjects();

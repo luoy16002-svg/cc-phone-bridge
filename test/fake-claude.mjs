@@ -74,7 +74,7 @@ async function turn(msg) {
   const earlier = fs.existsSync(file) ? fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l))
     .filter((o) => o.type === 'user' && Array.isArray(o.message?.content) && o.message.content[0]?.type === 'text').map((o) => o.message.content[0].text) : [];
   out({ type: 'system', subtype: 'init', model, cwd: process.cwd(), tools: [] });
-  save({ type: 'user', uuid: crypto.randomUUID(), message: { role: 'user', content: msg.message.content.map((c) => (c.type === 'image' ? { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AA==' } } : c)) } });
+  save({ type: 'user', uuid: msg.uuid || crypto.randomUUID(), message: { role: 'user', content: msg.message.content.map((c) => (c.type === 'image' ? { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AA==' } } : c)) } });
   fs.appendFileSync(file, `${JSON.stringify({ type: 'last-prompt', lastPrompt: text, sessionId: session })}\n`);
   if (/crash/.test(text)) {
     process.stderr.write('boom: fake crash\n');
@@ -99,6 +99,14 @@ async function turn(msg) {
     out({ type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', name: 'Read' } } });
     assistant([{ type: 'tool_use', id: 'tool-read', name: 'Read', input: { file_path: path.join(process.cwd(), 'README.md') } }]);
     toolResult('tool-read', [{ type: 'text', text: 'line one\nline two' }]);
+  }
+  if (/stall/.test(text)) {
+    // the reply reaches the transcript, but the output to the bridge goes quiet for a while
+    const uuid = crypto.randomUUID();
+    save({ type: 'assistant', uuid, message: { role: 'assistant', model, content: [{ type: 'text', text: '转录里的回答' }] } });
+    await sleep(2500);
+    out({ type: 'result', subtype: 'success', is_error: false, duration_ms: Date.now() - t0, num_turns: 1, result: 'ok', terminal_reason: 'completed', total_cost_usd: 0.001 });
+    return;
   }
   if (/前面说过什么/.test(text)) await streamText(`说过：${earlier.join('｜') || '没有'}`);
   else await streamText(images ? `got ${images} image` : `${process.env.FAKE_LANG === "en" ? "Got it: " : "收到："}${text}${args.includes('--effort') ? ` (${at('--effort')})` : ''}`);

@@ -125,6 +125,12 @@ Every message you sent has a branch button. A branch from a message is a new con
 - A branch from the very first message has nothing to keep: it is a new conversation in the same folder.
 - A branch is created when you send its first message, so trying it out leaves nothing behind.
 
+## Leaving the page
+
+The work runs on the computer, so you can leave the page, lock the phone or close the app after sending. Back on the page the conversation catches up by itself, and if the system closed the app meanwhile, it reopens the conversation you were in. Turn on the note at the end of a turn in Settings to hear when it is done.
+
+A message that gets no answer on a bad connection is sent again by itself; the computer runs one message once.
+
 ## How it works
 
 ```mermaid

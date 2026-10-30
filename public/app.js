@@ -130,6 +130,8 @@
   }
 
   // ---------------------------------------------------------------- state
+  const STREAM_SILENCE = 25000;              // the computer sends something every ten seconds
+  const REOPEN_MS = 6 * 3600 * 1000;
   const S = {
     token: LS.get('token', null),
     server: null,
@@ -145,14 +147,32 @@
   // ---------------------------------------------------------------- network
   class Unpaired extends Error {}
 
-  async function api(method, path, body) {
+  const newCid = () => (crypto.randomUUID ? crypto.randomUUID() : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`);
+  const pause = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  // `cid` marks a request that must not get lost: it is sent again when the answer never came, and the computer runs one
+  // id only once and repeats its first answer, so nothing is done twice.
+  async function api(method, path, body, cid = null) {
+    if (!cid) return call(method, path, body);
+    for (let i = 0; ; i++) {
+      try {
+        return await call(method, path, body, cid);
+      } catch (e) {
+        if (e.status || e instanceof Unpaired || i >= 3) throw e;
+        await pause(1200 * 2 ** i);
+      }
+    }
+  }
+
+  async function call(method, path, body, cid = null) {
     let res;
     try {
       res = await fetch(path, {
         method,
-        headers: { Authorization: `Bearer ${S.token}`, ...(body ? { 'Content-Type': 'application/json' } : {}) },
+        headers: { Authorization: `Bearer ${S.token}`, ...(body ? { 'Content-Type': 'application/json' } : {}), ...(cid ? { 'X-Cid': cid } : {}) },
         body: body ? JSON.stringify(body) : undefined,
         cache: 'no-store',
+        ...(cid ? { signal: AbortSignal.timeout(body?.images?.length ? 90000 : 45000) } : {}),
       });
     } catch (e) {
       setOnline(false);
@@ -168,14 +188,19 @@
     return data;
   }
 
-  // Server-sent events over fetch, so the token travels in a header. Reconnects by itself.
+  // Server-sent events over fetch, so the token travels in a header. Reconnects by itself. The computer sends something
+  // every ten seconds: a connection that stays silent longer has died without saying so, as ones do when the phone
+  // sleeps or changes network, and is replaced; every new connection starts with a catch-up (onOpen).
   function stream(urlFn, { onEvent, onOpen }) {
     let stopped = false;
     let ctrl = null;
     let wait = 700;
+    let heard = Date.now();
+    const watchdog = setInterval(() => { if (Date.now() - heard > STREAM_SILENCE) ctrl?.abort(); }, 4000);
     async function run() {
       if (stopped) return;
       ctrl = new AbortController();
+      heard = Date.now();
       try {
         const res = await fetch(urlFn(), { headers: { Authorization: `Bearer ${S.token}` }, signal: ctrl.signal, cache: 'no-store' });
         if (res.status === 401) {
@@ -192,6 +217,7 @@
         for (;;) {
           const { value, done } = await reader.read();
           if (done) break;
+          heard = Date.now();
           buf += dec.decode(value, { stream: true });
           let i;
           while ((i = buf.indexOf('\n\n')) >= 0) {
@@ -221,7 +247,14 @@
       }
     }
     run();
-    const handle = { stop() { stopped = true; ctrl?.abort(); } };
+    const handle = {
+      stop() {
+        stopped = true;
+        clearInterval(watchdog);
+        ctrl?.abort();
+      },
+      stale: () => Date.now() - heard > 12000,
+    };
     S.streams.push(handle);
     return handle;
   }
@@ -359,6 +392,8 @@
     let queueText = '';
     let running = false;
     let branch = '';
+    let note = '';
+    let cid = newCid();              // the same draft sent again is the same message, whatever happened to the first try
     const placeholderNow = () => (running ? t('接着写，这轮做完再发') : branch ? t('在新分支里接着说…') : placeholder);
 
     const fit = () => {
@@ -371,13 +406,14 @@
       thumbs.replaceChildren(...images.map((im, i) => h('div', { class: 'thumb' },
         h('img', { src: im.preview, alt: '' }),
         h('button', { type: 'button', 'aria-label': t('去掉这张图'), onclick: () => { URL.revokeObjectURL(im.preview); images.splice(i, 1); refresh(); } }, icon('x', 'xs')))));
-      const text = blocked || queueText || branch;
+      const text = blocked || queueText || branch || note;
       hint.hidden = !text;
       hint.textContent = text;
     };
     ta.addEventListener('input', () => {
       fit();
       refresh();
+      cid = newCid();
       if (draftKey) LS.set(`draft.${draftKey}`, ta.value);
     });
     ta.addEventListener('keydown', (e) => {
@@ -403,7 +439,8 @@
       busy = true;
       refresh();
       try {
-        await onSend(text, images.map(({ type, data }) => ({ type, data })));
+        await onSend(text, images.map(({ type, data }) => ({ type, data })), cid);
+        cid = newCid();
         ta.value = '';
         if (draftKey) LS.del(`draft.${draftKey}`);
         for (const im of images) URL.revokeObjectURL(im.preview);
@@ -440,6 +477,12 @@
       setBlocked(text) {
         if (blocked === (text || '')) return;
         blocked = text || '';
+        refresh();
+      },
+      // where the message will go, when it is not the usual place: the line under the box
+      setNote(text) {
+        if (note === (text || '')) return;
+        note = text || '';
         refresh();
       },
       // the message will start a branch: the send button, the placeholder and the line under the box say so
@@ -608,6 +651,7 @@
   function statusOf(s) {
     const bits = [];
     if (s.state === 'running') bits.push(h('span', { class: 'st' }, h('span', { class: 'dot run' }), s.queue ? t('在做，还有 {n} 条排队', { n: s.queue }) : t('在做')));
+    else if (s.pcWaiting) bits.push(h('span', { class: 'st pc' }, icon('alert-triangle', 'xs'), t('电脑上等你回答')));
     else if (s.pcBusy) bits.push(h('span', { class: 'st pc' }, h('span', { class: 'dot run' }), t('电脑上在做')));
     else if (s.state === 'error') bits.push(h('span', { class: 'st err' }, t('没能启动')));
     if (s.openOnPc && !s.pcBusy) bits.push(h('span', { class: 'st pc' }, icon('device-desktop', 'xs'), t('电脑上开着')));
@@ -616,6 +660,7 @@
 
   function showDesk() {
     stopAll();
+    LS.del('openChat');
     const cards = h('div', { class: 'cards' }, h('div', { class: 'hint-row' }, t('在读电脑上的对话…')));
     const suggest = h('div', { class: 'suggest' });
     const sub = h('span', { class: 'status' });
@@ -714,22 +759,35 @@
     };
     loadState().catch(() => null).then(() => { drawFilter(); return refresh(); });
     let pending = false;
-    stream(() => '/api/stream', {
-      onEvent: (ev, d) => {
-        if (ev === 'suggestions') return drawSuggest(d.items);
-        if (ev !== 'session') return;
-        const i = list.findIndex((s) => s.id === d.id);
-        if (i >= 0) list[i] = d;
-        else list.unshift(d);
-        list.sort((a, b) => b.updatedAt - a.updatedAt);
-        if (!pending) {
-          pending = true;
-          requestAnimationFrame(() => { pending = false; draw(); });
-        }
-      },
-    });
-    S.timers.push(setInterval(refresh, 30000));
-    S.resume = () => showDesk();
+    let opened = false;
+    const connect = () => {
+      stream(() => '/api/stream', {
+        onOpen: () => {
+          if (opened) refresh();                 // what changed while the phone was away
+          opened = true;
+        },
+        onEvent: (ev, d) => {
+          if (ev === 'suggestions') return drawSuggest(d.items);
+          if (ev !== 'session') return;
+          const i = list.findIndex((s) => s.id === d.id);
+          if (i >= 0) list[i] = d;
+          else list.unshift(d);
+          list.sort((a, b) => b.updatedAt - a.updatedAt);
+          if (!pending) {
+            pending = true;
+            requestAnimationFrame(() => { pending = false; draw(); });
+          }
+        },
+      });
+      S.timers.push(setInterval(refresh, 30000));
+    };
+    const resume = () => {
+      stopAll();
+      connect();
+      S.resume = resume;
+    };
+    connect();
+    S.resume = resume;
   }
 
   // ---------------------------------------------------------------- choosing a folder: tap through, make one in place
@@ -952,8 +1010,9 @@
 
   async function showSession(id) {
     stopAll();
+    LS.set('openChat', { id, at: Date.now() });
     if (!S.models) loadState().catch(() => null);
-    const C = { id, hist: [], live: new Map(), cursor: 0, hasMore: false, state: 'idle', queue: 0, liveText: '', activity: null, since: 0, expanded: new Set(), open: new Set(), session: null, pc: { open: false, busy: false, held: false }, pcSince: 0 };
+    const C = { id, hist: [], live: new Map(), cursor: 0, hasMore: false, state: 'idle', queue: 0, liveText: '', activity: null, since: 0, expanded: new Set(), open: new Set(), session: null, pc: { open: false, busy: false, held: false, waiting: false, waitingFor: '', typable: false }, pcSince: 0 };
     const timeline = h('div', { class: 'timeline', 'aria-live': 'polite' });
     const liveBox = h('div', { class: 'a live', hidden: true });
     const activity = h('div', { class: 'activity', hidden: true });
@@ -971,17 +1030,23 @@
     const comp = composer({
       placeholder: t('接着说…'),
       draftKey: `s.${id}`,
-      onSend: async (text, images) => {
-        if (heldByPc()) return branchOff(C, { text, images });
+      onSend: async (text, images, cid) => {
+        if (heldByPc()) return branchOff(C, { text, images }, cid);
         try {
-          return await api('POST', `/api/sessions/${id}/messages`, { text, images });
+          return await api('POST', `/api/sessions/${id}/messages`, { text, images }, cid);
         } catch (e) {
           if (e.message === 'pc_holds') {
             // the computer took the thread a moment ago: go on in a branch, nothing is lost
             C.pc.held = true;
             drawHeader();
-            return branchOff(C, { text, images });
+            return branchOff(C, { text, images }, newCid());
           }
+          if (e.message === 'pc_waiting') e.shown = t('电脑上正等你回答一个问题，在电脑上答完再发');
+          if (e.message === 'pc_unreachable' && await askBackground()) {
+            // the window would not take typing: the person chose to go on without it
+            return api('POST', `/api/sessions/${id}/messages`, { text, images, background: true }, newCid());
+          }
+          if (e.message === 'pc_unreachable') e.shown = t('没发出去，草稿还在');
           if (e.message === 'pc_busy') e.shown = t('电脑上正在做这个对话，做完再发');
           throw e;
         }
@@ -1004,6 +1069,10 @@
     const pcBusy = () => C.pc.busy && C.state !== 'running';
     // Codex on the computer has the thread open: only it can write the thread, so the phone goes on in a branch
     const heldByPc = () => C.pc.held && C.state !== 'running' && !pcBusy();
+    // Claude Code open in a window on the computer: what the phone sends is typed into that window
+    const pcTypes = () => C.pc.open && C.pc.typable && C.state !== 'running';
+    const pcWaits = () => pcTypes() && C.pc.waiting;
+    const WAITS = { 'input needed': '一个问题', 'permission prompt': '一个权限确认', 'dialog open': '一个打开的界面' };
 
     function drawHeader() {
       const s = C.session || {};
@@ -1011,15 +1080,23 @@
       title.textContent = s.title || t('新对话');
       sub.replaceChildren(h('span', { class: `dot ${running ? 'run' : C.state === 'error' ? 'err' : 'ok'}` }),
         `${s.folder ? `${s.folder} · ` : ''}${modelLine(s)}${C.state === 'running' ? ` · ${t('在做')}` : pcBusy() ? ` · ${t('电脑上在做')}` : ''}`, icon('chevron-down', 'xs'));
-      comp.setRunning(C.state === 'running', C.queue ? t('还有 {n} 条排队，这一轮做完就发', { n: C.queue }) : '');
-      comp.setBlocked(pcBusy() ? t('电脑上正在做这个对话，做完再发') : '');
+      comp.setRunning(C.state === 'running' || (pcBusy() && pcTypes()), C.queue ? t('还有 {n} 条排队，这一轮做完就发', { n: C.queue }) : '');
+      comp.setBlocked(pcWaits() ? t('电脑上正等你回答一个问题，在电脑上答完再发') : pcBusy() && !pcTypes() ? t('电脑上正在做这个对话，做完再发') : '');
+      comp.setNote(!pcTypes() ? '' : pcBusy() ? t('这条会排进电脑上的窗口，做完手上这一步就接上') : t('这条会输入到电脑上开着的窗口'));
       comp.setBranch(heldByPc() ? t('电脑上开着这个对话，这条会发到新分支里') : '');
       pcNote.hidden = !C.pc.open && !pcBusy() && !heldByPc();
-      pcNote.replaceChildren(...(pcBusy()
-        ? [h('span', { class: 'dot run' }), h('span', null, t('电脑上正在做这个对话，这里跟着实时显示。等它做完，手机上就能接着发。'))]
-        : heldByPc()
-          ? [icon('git-branch', 'xs'), h('span', null, t('电脑上的 Codex 正开着这个对话，只有它能接着写。这里发出的消息会从最新一轮分出一个新对话，原对话不动。'))]
-          : [icon('device-desktop', 'xs'), h('span', null, t('这个对话在电脑上也开着。手机上发的会接在后面，电脑那个窗口要重新打开才看得到。'))]));
+      const what = t(WAITS[C.pc.waitingFor] || '一个需要你处理的界面');
+      pcNote.replaceChildren(...(pcWaits()
+        ? [icon('alert-triangle', 'xs'), h('span', null, t('电脑上的窗口正等你回答{what}。在电脑上处理完，手机上才能接着发。', { what }))]
+        : pcBusy()
+          ? [h('span', { class: 'dot run' }), h('span', null, pcTypes()
+            ? t('电脑上正在做这个对话，这里跟着实时显示。手机上发的会排进电脑上的窗口。')
+            : t('电脑上正在做这个对话，这里跟着实时显示。等它做完，手机上就能接着发。'))]
+          : heldByPc()
+            ? [icon('git-branch', 'xs'), h('span', null, t('电脑上的 Codex 正开着这个对话，只有它能接着写。这里发出的消息会从最新一轮分出一个新对话，原对话不动。'))]
+            : [icon('device-desktop', 'xs'), h('span', null, pcTypes()
+              ? t('这个对话在电脑上开着。手机上发的会输入到那个窗口，电脑上能看到全过程。')
+              : t('这个对话在电脑上也开着。手机上发的会接在后面，电脑那个窗口要重新打开才看得到。'))]));
       const from = s.from;
       fromLine.hidden = !from;
       if (from) {
@@ -1027,6 +1104,10 @@
         fromLine.onclick = () => go(`#/s/${from.id}`);
       }
     }
+
+    // A message of the phone's that has not become part of the conversation yet: waiting in the phone's queue, sent
+    // to the window on the computer, or one that did not get there.
+    const waitingUser = (e) => e.k === 'user' && ['queued', 'canceled', 'pc', 'pc_queued', 'pc_failed'].includes(e.state);
 
     // events (history, then live ones the history does not have yet) -> blocks -> DOM, reusing unchanged elements
     function events() {
@@ -1060,7 +1141,7 @@
         switch (e.k) {
           case 'user':
             group = null;
-            if (e.state !== 'queued' && e.state !== 'canceled') {
+            if (!waitingUser(e)) {
               endTurn();
               if (!e.command) turn = { id: e.id, start: e.t || 0, last: e.t || 0, model: '', replied: false, result: false };
             }
@@ -1114,7 +1195,7 @@
       if (C.state !== 'running' && !pcBusy()) endTurn();
       else {
         // the tools slip still being added to: the last block, apart from messages waiting their turn
-        const lastReal = [...out].reverse().find((b) => !(b.type === 'user' && (b.e.state === 'queued' || b.e.state === 'canceled')));
+        const lastReal = [...out].reverse().find((b) => !(b.type === 'user' && waitingUser(b.e)));
         if (lastReal?.type === 'tools') lastReal.working = true;
       }
       for (const b of out) {
@@ -1130,14 +1211,16 @@
     // A message the conversation can be branched from: one in the record (Codex: with the turn it opened).
     const branchable = (e) => !e.pending && !e.state && !e.command && (agentOf(C.session) === 'codex' ? !!e.turn : /^[0-9a-f-]{36}$/i.test(e.id));
 
+    const STATES = { canceled: '已取消', pc: '正送到电脑上的窗口', pc_queued: '在电脑上排队', pc_failed: '电脑上的窗口没收到' };
+
     function drawUser(b) {
       const e = b.e;
-      const st = e.state === 'canceled' ? t('已取消') : e.state === 'queued' ? (C.state === 'running' ? t('排队中') : t('发送中')) : '';
+      const st = e.state === 'queued' ? (C.state === 'running' ? t('排队中') : t('发送中')) : STATES[e.state] ? t(STATES[e.state]) : '';
       const imgs = Array.isArray(e.images) ? e.images : [];
       const fork = C.session && branchable(e)
         ? h('button', { class: 'br', type: 'button', 'aria-label': t('从这里分支'), onclick: () => openBranch(C, e) }, icon('git-branch', 'xs'))
         : null;
-      return h('div', { class: `u${e.state === 'canceled' ? ' canceled' : ''}${e.command ? ' cmd' : ''}` },
+      return h('div', { class: `u${e.state === 'canceled' || e.state === 'pc_failed' ? ' canceled' : ''}${e.command ? ' cmd' : ''}` },
         imgs.length ? h('div', { class: 'imgs' }, imgs.map((ref) => {
           const img = h('img', { alt: t('附图') });
           authedImage(ref, img);
@@ -1253,7 +1336,7 @@
     }
 
     function lastWork() {
-      return events().reverse().find((e) => ['tool', 'tool_result', 'text', 'user'].includes(e.k) && e.state !== 'queued');
+      return events().reverse().find((e) => ['tool', 'tool_result', 'text', 'user'].includes(e.k) && !waitingUser(e));
     }
 
     function drawActivity() {
@@ -1295,6 +1378,8 @@
       try {
         const r = await api('GET', `/api/sessions/${id}`);
         C.session = r.session;
+        C.state = r.session.state;
+        C.queue = r.session.queue;
         const ids = new Set(r.events.map((e) => e.id));
         const firstT = r.events.length ? r.events[0].t : Infinity;
         C.hist = [...C.hist.filter((e) => e.t < firstT && !ids.has(e.id)), ...r.events];
@@ -1306,8 +1391,9 @@
         for (const [k, e] of C.live) {
           if (e.k === 'result') lastResult = k;
         }
+        // a message the transcript does not hold yet stays on screen: it is only gone once the history has it
         for (const [k, e] of [...C.live]) {
-          const keep = (e.k === 'user' && e.state === 'queued') || k === lastResult;
+          const keep = (e.k === 'user' && e.state && e.state !== 'canceled' && !ids.has(k)) || k === lastResult;
           if (!keep) C.live.delete(k);
         }
         schedule();
@@ -1316,6 +1402,13 @@
     let reloadTimer = 0;
 
     function onEvent(kind, d) {
+      if (kind === 'ev' && d.k === 'drop') {
+        // a message typed into the window is in the transcript now, and comes from there
+        C.live.delete(d.id);
+        C.hist = C.hist.filter((e) => e.id !== d.id);
+        schedule();
+        return;
+      }
       if (kind === 'ev') {
         C.live.set(d.id, d);
         if (d.k === 'text' && !d.pc) C.liveText = '';
@@ -1342,7 +1435,7 @@
           if (d.what === 'writing') C.liveText = '';
         } else if (d.k === 'pc') {
           const was = C.pc.busy;
-          C.pc = { open: !!d.open, busy: !!d.busy, held: !!d.held };
+          C.pc = { open: !!d.open, busy: !!d.busy, held: !!d.held, waiting: !!d.waiting, waitingFor: d.waitingFor || '', typable: !!d.typable };
           if (d.busy && !was) {
             const u = events().reverse().find((e) => e.k === 'user' && !e.state);
             C.pcSince = u && u.t && Date.now() - u.t < 3600000 ? u.t : Date.now();
@@ -1368,7 +1461,7 @@
       C.hasMore = r.hasMore;
       C.state = r.session.state;
       C.queue = r.session.queue;
-      C.pc = { open: !!r.session.openOnPc && !r.session.held, busy: !!r.session.pcBusy, held: !!r.session.held };
+      C.pc = { open: !!r.session.openOnPc && !r.session.held, busy: !!r.session.pcBusy, held: !!r.session.held, waiting: !!r.session.pcWaiting, waitingFor: r.session.pcWaitingFor || '', typable: !!r.session.pcTypable };
       if (C.pc.busy) {
         const u = [...r.events].reverse().find((e) => e.k === 'user');
         C.pcSince = u?.t || Date.now();
@@ -1385,6 +1478,10 @@
     const connect = () => {
       stream(() => `/api/sessions/${id}/stream`, { onEvent, onOpen: () => { if (!firstRender) reload(); } });
       S.timers.push(setInterval(() => { if (C.state === 'running' || pcBusy()) drawActivity(); }, 1000));
+      // "I am looking at this one": without it the computer sends a note when the turn ends
+      const here = () => { if (!document.hidden) api('POST', '/api/here', { id }).catch(() => null); };
+      here();
+      S.timers.push(setInterval(here, 12000));
     };
     const resume = () => {
       stopAll();
@@ -1401,12 +1498,30 @@
     layer.append(v);
   }
 
-  function sheet(content) {
-    const close = () => { box.remove(); shade.remove(); };
+  function sheet(content, onClose) {
+    const close = () => { box.remove(); shade.remove(); onClose?.(); };
     const shade = h('div', { class: 'shade', onclick: () => close() });
     const box = h('div', { class: 'menu', role: 'dialog' }, content);
     layer.append(shade, box);
     return close;
+  }
+
+  // The window on the computer would not take the message: say so, and let the person choose to go on without it.
+  function askBackground() {
+    return new Promise((resolve) => {
+      let answered = false;
+      const done = (v) => {
+        if (answered) return;
+        answered = true;
+        close();
+        resolve(v);
+      };
+      const close = sheet(h('div', { class: 'branch' },
+        h('h2', null, t('电脑上的窗口收不到这条')),
+        h('p', null, t('可以改在后台接着做这个对话，但电脑上那个窗口不会显示这一轮，要重新打开才看得到。')),
+        h('button', { class: 'btn wide', type: 'button', onclick: () => done(true) }, t('改在后台接着做')),
+        h('button', { class: 'btn wide quiet', type: 'button', onclick: () => done(false) }, t('先不发'))), () => done(false));
+    });
   }
 
   async function openPrefs(C, redraw) {
@@ -1424,7 +1539,7 @@
         C.session = r.session;
         redraw();
         close();
-        toast(C.state === 'running' ? t('这一轮做完后换上') : t('下一条消息起生效'));
+        toast(C.state === 'running' ? t('这一轮做完后换上') : r.deferred === 'background' ? t('后台还有任务在跑，跑完再换上') : t('下一条消息起生效'));
       } catch {
         toast(t('没保存上'));
       }
@@ -1435,10 +1550,10 @@
   }
 
   // Start a branch and open it: the message goes to the new conversation, this one stays as it was.
-  async function branchOff(C, body) {
+  async function branchOff(C, body, cid = newCid()) {
     toast(t('正在分支…'));
     try {
-      const r = await api('POST', `/api/sessions/${C.id}/fork`, body);
+      const r = await api('POST', `/api/sessions/${C.id}/fork`, body, cid);
       toast(t('已在新分支里发出'));
       go(`#/s/${r.id}`);
       return r;
@@ -1647,14 +1762,25 @@
     return showDesk();
   }
 
+  // Back on the page, however the phone got there: if the connection did not live through it, a new one catches up.
+  function wake() {
+    if (document.hidden || !S.token || !S.resume) return;
+    if (!S.streams.length || S.streams.some((s) => s.stale())) S.resume();
+  }
+
   window.addEventListener('hashchange', route);
   document.addEventListener('visibilitychange', () => {
-    if (document.hidden) {
-      for (const s of S.streams) s.stop();
-      S.streams = [];
-    } else if (S.token && S.resume) {
-      S.resume();
-    }
+    if (!document.hidden) return wake();
+    for (const s of S.streams) s.stop();
+    S.streams = [];
+    const open = LS.get('openChat', null);
+    if (open) LS.set('openChat', { id: open.id, at: Date.now() });
+    // no longer looking: the note at the end of the turn goes out again
+    if (S.token) fetch('/api/here', { method: 'POST', keepalive: true, headers: { Authorization: `Bearer ${S.token}`, 'Content-Type': 'application/json' }, body: '{}' }).catch(() => null);
   });
+  for (const ev of ['pageshow', 'focus', 'online']) window.addEventListener(ev, wake);
+  // The phone may have closed the app while it was away: open the conversation it was showing, not the list.
+  const openChat = LS.get('openChat', null);
+  if (S.token && (!location.hash || location.hash === '#/') && openChat && Date.now() - openChat.at < REOPEN_MS) location.replace(`#/s/${openChat.id}`);
   route();
 })();

@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.5.0 (2026-10-30)
+
+- **The phone and a window on the computer stay one conversation.** When a Claude Code conversation is open in a window on the computer, what you send from the phone is typed into that window: the window runs the turn and shows it, and nothing runs beside it, so the two can no longer drift into two versions of the conversation. A message sent while a turn runs joins the window's own queue. Whatever sits in the window's box is kept. If the window is waiting for an answer, the phone says so; if it cannot be reached, the phone asks before going on in the background.
+- **Leave the page and come back.** The work runs on the computer whether the phone is looking or not. Back on the page, however you got there, the conversation catches up on what it missed; the phone reopens the conversation you were in if the system closed the app meanwhile.
+- **Connections that die without saying so are noticed.** A phone that sleeps or changes network can leave a connection hanging with no error, and the page then showed nothing new. The computer now sends something every ten seconds, and the page replaces a connection that goes quiet and catches up.
+- **A message goes through once.** A send whose answer never came is tried again by itself, and resending the same draft by hand is safe: the computer runs one message once. A message reported as not delivered that lands late after all is taken back.
+- **Replies do not get stuck.** If Claude Code's output stalls, the reply still reaches the phone from the transcript.
+- **The note at the end of a turn is more reliable.** An open connection no longer counts as looking at the page, so a phone that was put away gets its note. Turns the phone started in a window on the computer get a note too.
+- A conversation left idle is no longer closed while background work it started is still running.
+
 ## 1.4.1 (2026-10-23)
 
 - The list shows every Codex conversation once. It used to scan Codex's rollout files when the server started and every five minutes, and a scan lists a conversation once for each file it has, so cards came up twice and others dropped out of the list. It now reads Codex's state database, as the Codex app does, and scans only when the database is empty.

@@ -19,7 +19,16 @@ const CWD = path.join(PROJ, 'demo');
 fs.mkdirSync(CWD);
 const OUTSIDE = fs.mkdtempSync(path.join(os.tmpdir(), 'ccpb-outside-'));
 const SUGG = path.join(DATA, 'suggestions.json');
-fs.writeFileSync(path.join(DATA, 'config.json'), JSON.stringify({ roots: [PROJ], timeZone: 'America/Los_Angeles', suggestions: { file: SUGG }, codex: { enabled: false } }));
+const NTFY_PORT = 18071;
+const pushes = [];
+const ntfy = http.createServer((req, res) => {
+  req.resume();
+  req.on('end', () => {
+    pushes.push(req.url);
+    res.end('ok');
+  });
+}).listen(NTFY_PORT, '127.0.0.1');
+fs.writeFileSync(path.join(DATA, 'config.json'), JSON.stringify({ roots: [PROJ], timeZone: 'America/Los_Angeles', suggestions: { file: SUGG }, codex: { enabled: false }, push: { ntfyServer: `http://127.0.0.1:${NTFY_PORT}`, ntfyTopic: 'test' } }));
 fs.writeFileSync(path.join(DATA, 'settings.json'), JSON.stringify({ pushOnFinish: false }));
 fs.writeFileSync(path.join(CONF, 'settings.json'), JSON.stringify({ model: 'opus', modelSettings: { 'claude-opus-5-5': { effortLevel: 'xhigh' } } }));
 process.env.CCPB_CONFIG_DIR = CONF;
@@ -43,7 +52,7 @@ function check(name, ok, extra = '') {
 function startServer() {
   server = spawn(process.execPath, [path.join(ROOT, 'server.mjs')], {
     cwd: ROOT,
-    env: { ...process.env, CCPB_PORT: String(PORT), CCPB_DATA: DATA, CCPB_CONFIG_DIR: CONF, CCPB_SHOW_TEMP: '1', CCPB_CLAUDE_CMD: JSON.stringify([process.execPath, FAKE]) },
+    env: { ...process.env, CCPB_PORT: String(PORT), CCPB_DATA: DATA, CCPB_CONFIG_DIR: CONF, CCPB_SHOW_TEMP: '1', CCPB_CLAUDE_CMD: JSON.stringify([process.execPath, FAKE]), CCPB_TYPEIN_CMD: JSON.stringify([process.execPath, path.join(ROOT, 'test', 'fake-typein.mjs')]), CCPB_DELIVER_MS: '1200' },
     stdio: ['ignore', 'inherit', 'inherit'],
   });
 }
@@ -58,8 +67,8 @@ async function waitUp() {
   return false;
 }
 
-async function api(method, p, body, tk = token) {
-  const r = await fetch(BASE + p, { method, headers: { ...(tk ? { Authorization: `Bearer ${tk}` } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}) }, body: body ? JSON.stringify(body) : undefined });
+async function api(method, p, body, tk = token, extra = {}) {
+  const r = await fetch(BASE + p, { method, headers: { ...(tk ? { Authorization: `Bearer ${tk}` } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}), ...extra }, body: body ? JSON.stringify(body) : undefined });
   const text = await r.text();
   let data = null;
   try {
@@ -368,6 +377,95 @@ async function main() {
     && !(await api('GET', '/api/suggestions')).data.items.some((x) => x.id === 'job-1'));
   check('dismissing needs a proper id', (await api('POST', '/api/suggestions/dismiss', { id: '../x' })).status === 400);
 
+  console.log('a shaky network');
+  const shakyId = (await api('POST', '/api/sessions', { cwd: CWD, text: 'first of the shaky ones' })).data.id;
+  const LS1 = listen(shakyId);
+  await LS1.until((e) => e.k === 'result');
+  const cid = { 'X-Cid': 'phone-try-0001' };
+  const [t1, t2] = await Promise.all([
+    api('POST', `/api/sessions/${shakyId}/messages`, { text: 'only once please' }, token, cid),
+    api('POST', `/api/sessions/${shakyId}/messages`, { text: 'only once please' }, token, cid),
+  ]);
+  const t3 = await api('POST', `/api/sessions/${shakyId}/messages`, { text: 'only once please' }, token, cid);
+  check('the same message sent three times gets one answer', t1.status === 200 && t1.data.id === t2.data.id && t1.data.id === t3.data.id, JSON.stringify([t1.data, t2.data, t3.data]));
+  await sleep(600);
+  const onceEv = (await api('GET', `/api/sessions/${shakyId}`)).data.events;
+  check('and runs once', onceEv.filter((e) => e.k === 'user' && e.text === 'only once please').length === 1);
+  check('another try with a new id does run', (await api('POST', `/api/sessions/${shakyId}/messages`, { text: 'again on purpose' }, token, { 'X-Cid': 'phone-try-0002' })).status === 200);
+  await LS1.until((e) => e.k === 'text' && /again on purpose/.test(e.text));
+
+  await api('POST', `/api/sessions/${shakyId}/messages`, { text: 'stall here' });
+  const stalled = await LS1.until((e) => e.k === 'text' && e.text === '转录里的回答', 2000);
+  check('a reply the output has not delivered comes from the transcript', !!stalled && !stalled.pc && LS1.count((e) => e.k === 'result' && e.t > stalled.t) === 0);
+  LS1.stop();
+
+  console.log('the note when a turn ends');
+  await api('PUT', '/api/settings', { pushOnFinish: true });
+  const pushed = async (ms = 2500) => {
+    const n = pushes.length;
+    const end = Date.now() + ms;
+    while (Date.now() < end && pushes.length === n) await sleep(50);
+    return pushes.length > n;
+  };
+  const LN = listen(shakyId);                                       // an open connection, as a phone that went away leaves one
+  await sleep(150);
+  let got = pushed();
+  await api('POST', `/api/sessions/${shakyId}/messages`, { text: 'nobody is looking' });
+  check('an open connection alone does not count as looking', await got);
+  await api('POST', '/api/here', { id: shakyId });
+  got = pushed(1800);
+  await api('POST', `/api/sessions/${shakyId}/messages`, { text: 'someone is looking' });
+  check('no note while the page is on screen', !(await got));
+  await api('POST', '/api/here', {});
+  got = pushed();
+  await api('POST', `/api/sessions/${shakyId}/messages`, { text: 'looked away again' });
+  check('a note again after the page was put away', await got);
+  LN.stop();
+
+  if (process.platform === 'win32') {
+    console.log('typing into a window on the computer');
+    const typed = path.join(DATA, 'typed.jsonl');
+    const winId = (await api('POST', '/api/sessions', { cwd: CWD, text: 'a conversation that gets a window' })).data.id;
+    await sleep(500);
+    const fakeWindow = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+    const winReg = path.join(CONF, 'sessions', `${fakeWindow.pid}.json`);
+    const regWin = (status, extra = {}) => fs.writeFileSync(winReg, JSON.stringify({ pid: fakeWindow.pid, sessionId: winId, cwd: CWD, kind: 'interactive', entrypoint: 'cli', status, updatedAt: Date.now(), ...extra }));
+    regWin('idle');
+    await sleep(200);
+    const LW = listen(winId);
+    await sleep(200);
+    check('a window that can be typed into is flagged', (await api('GET', `/api/sessions/${winId}`)).data.session.pcTypable === true);
+    let npush = pushes.length;
+    const tw = await api('POST', `/api/sessions/${winId}/messages`, { text: '手机发到窗口' });
+    check('the message goes to the window', tw.status === 200 && tw.data.via === 'pc', JSON.stringify(tw.data));
+    const typedLine = fs.existsSync(typed) ? JSON.parse(fs.readFileSync(typed, 'utf8').trim().split('\n').pop()) : {};
+    check('typed as a paste, then Enter', typedLine.pid === fakeWindow.pid && typedLine.pasted?.[0] === '手机发到窗口' && typedLine.keys?.includes('enter'), JSON.stringify(typedLine));
+    check('the phone shows it on its way', !!(await LW.until((e) => e.k === 'user' && e.state === 'pc', 2000)));
+    const wfile = path.join(CONF, 'projects', CWD.replace(/[^a-zA-Z0-9]/g, '-'), `${winId}.jsonl`);
+    regWin('busy');
+    fs.appendFileSync(wfile, `${JSON.stringify({ type: 'user', uuid: crypto.randomUUID(), cwd: CWD, sessionId: winId, timestamp: new Date().toISOString(), message: { role: 'user', content: '手机发到窗口' } })}\n`);
+    check('and swaps it for the real one when the window has it', !!(await LW.until((e) => e.k === 'drop', 4000)));
+    fs.appendFileSync(wfile, `${JSON.stringify({ type: 'assistant', uuid: crypto.randomUUID(), cwd: CWD, sessionId: winId, timestamp: new Date().toISOString(), message: { role: 'assistant', model: 'claude-opus-5-5', content: [{ type: 'text', text: '窗口里的回答' }] } })}\n`);
+    check('the reply from the window reaches the phone', !!(await LW.until((e) => e.k === 'text' && e.text === '窗口里的回答', 4000)));
+    await sleep(300);
+    regWin('idle');
+    const end = Date.now() + 8000;
+    while (Date.now() < end && pushes.length === npush) await sleep(50);
+    check('and a note when the window finished a turn the phone started', pushes.length > npush);
+
+    const tw2 = await api('POST', `/api/sessions/${winId}/messages`, { text: '晚到的一条' });
+    check('a second message goes to the window as well', tw2.data.via === 'pc');
+    check('one that does not show up in time is reported', !!(await LW.until((e) => e.k === 'user' && e.state === 'pc_failed', 3000)));
+    fs.appendFileSync(wfile, `${JSON.stringify({ type: 'user', uuid: crypto.randomUUID(), cwd: CWD, sessionId: winId, timestamp: new Date().toISOString(), message: { role: 'user', content: '晚到的一条' } })}\n`);
+    check('and taken back when it lands after all', !!(await LW.until((e) => e.k === 'drop' && e.id === tw2.data.id, 4000)));
+    const dup = await api('GET', `/api/sessions/${winId}`);
+    check('so it shows once', dup.data.events.filter((e) => e.k === 'user' && e.text === '晚到的一条').length === 1);
+    LW.stop();
+    fs.rmSync(winReg, { force: true });
+    fakeWindow.kill();
+  }
+  await api('PUT', '/api/settings', { pushOnFinish: false });
+
   console.log('restart while a turn runs');
   const L3 = listen(ns.data.id);
   await api('POST', `/api/sessions/${ns.data.id}/messages`, { text: 'slow again' });
@@ -394,6 +492,7 @@ try {
   console.log('ERROR', e.stack || e);
 } finally {
   server?.kill();
+  ntfy.close();
   await sleep(500);
   for (const d of [DATA, CONF, PROJ, OUTSIDE]) fs.rmSync(d, { recursive: true, force: true });
   process.exit(failures ? 1 : 0);
