@@ -291,9 +291,9 @@ try {
   const { rolloutLineEvents } = await import('../lib/codex.mjs');
   const png = path.join(DATA, 'looked-at.png');
   fs.writeFileSync(png, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64'));
-  const seen = [];
-  rolloutLineEvents({ type: 'event_msg', timestamp: new Date().toISOString(), payload: { type: 'item_completed', turn_id: 't', item: { type: 'imageView', id: 'img-1', path: png } } }, DATA, seen);
-  check('a picture Codex looked at reaches the phone', /^img\/[0-9a-f]{32}\.png$/.test(seen.find((e) => e.k === 'tool_result')?.images?.[0] || ''), JSON.stringify(seen));
+  const viewed = [];
+  rolloutLineEvents({ type: 'event_msg', timestamp: new Date().toISOString(), payload: { type: 'item_completed', turn_id: 't', item: { type: 'imageView', id: 'img-1', path: png } } }, DATA, viewed);
+  check('a picture Codex looked at reaches the phone', /^img\/[0-9a-f]{32}\.png$/.test(viewed.find((e) => e.k === 'tool_result')?.images?.[0] || ''), JSON.stringify(viewed));
 
   const nope = await api('GET', `/api/sessions/${crypto.randomUUID()}`);
   check('unknown ids are 404', nope.status === 404);
