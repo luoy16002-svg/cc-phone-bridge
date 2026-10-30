@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.6.0 (2026-10-30)
+
+- **DeepSeek Harness.** When the desktop app is installed, its conversations join the list, marked DeepSeek. Read them in full, follow a turn running on the computer, carry them on, stop them, start new ones, and answer a step that asks first. Turns from the phone run in the harness's own SDK runtime, with what you set up for the desktop app (your own providers too) and the conversation's own permissions; the model list shows the models your conversations use.
+- A harness session has one writer at a time, and the desktop app keeps the ones it has opened. The phone says so and keeps your draft; it can write once the app has let go. New conversations are never affected, and the phone gives a session back seconds after each turn, so the computer can pick it up at once.
+- **See what the agent saw.** Pictures an agent read show right under its steps, for Claude Code, Codex and DeepSeek Harness alike, and pictures sent in a conversation show as pictures in its history instead of a count.
+- Pictures travel by reference: each is kept once on the computer under the hash of its bytes, fetched when it scrolls near the screen and cached by the phone for good. Long conversations stay light. `limits.imageMB` caps the copies (default 1024); opening a conversation again brings back any that were cleared.
+
 ## 1.5.0 (2026-10-30)
 
 - **The phone and a window on the computer stay one conversation.** When a Claude Code conversation is open in a window on the computer, what you send from the phone is typed into that window: the window runs the turn and shows it, and nothing runs beside it, so the two can no longer drift into two versions of the conversation. A message sent while a turn runs joins the window's own queue. Whatever sits in the window's box is kept. If the window is waiting for an answer, the phone says so; if it cannot be reached, the phone asks before going on in the background.

@@ -44,7 +44,7 @@ const CWD = path.join(PROJ, 'demo');
 fs.mkdirSync(CWD);
 const mock = await startMockModel();
 fs.writeFileSync(path.join(HOME, 'config.toml'), mockConfig(mock.port));
-fs.writeFileSync(path.join(DATA, 'config.json'), JSON.stringify({ roots: [PROJ], timeZone: 'America/Los_Angeles', codex: { home: HOME, command: CODEX } }));
+fs.writeFileSync(path.join(DATA, 'config.json'), JSON.stringify({ roots: [PROJ], timeZone: 'America/Los_Angeles', dsh: { enabled: false }, codex: { home: HOME, command: CODEX } }));
 fs.writeFileSync(path.join(DATA, 'settings.json'), JSON.stringify({ pushOnFinish: false }));
 
 let failures = 0;

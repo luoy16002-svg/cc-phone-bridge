@@ -50,7 +50,7 @@ html.phone #app {
 .f-card, .card, .a, .form, .menu { border: 2px solid transparent; background: none; border-image: var(--frame-card) var(--frame); }
 .f-bubble, .u { border: 2px solid transparent; background: none; border-image: var(--frame-bubble) var(--frame); }
 .f-btn, .btn, .send { border: 2px solid transparent; background: none; border-image: var(--frame-btn) var(--frame); }
-.f-quiet, .btn.quiet, .stop, .tools, .pc-item, .jump, .seg, .pcnote, .fork-quote { border: 2px solid transparent; background: none; border-image: var(--frame-quiet) var(--frame); }
+.f-quiet, .btn.quiet, .stop, .tools, .pc-item, .jump, .seg, .pcnote, .fork-quote, .ask { border: 2px solid transparent; background: none; border-image: var(--frame-quiet) var(--frame); }
 .f-input, .input, .composer textarea { border: 2px solid transparent; background: none; border-image: var(--frame-input) var(--frame); -webkit-appearance: none; appearance: none; }
 .f-alert, .banner, .btn.danger { border: 2px solid transparent; background: none; border-image: var(--frame-alert) var(--frame); }
 
@@ -127,9 +127,12 @@ html.phone #app {
 
 .u { align-self: flex-end; max-width: 86%; padding: 8px 15px 7px; color: var(--ink); font-size: 16.5px; line-height: 1.6; }
 .u .tx { white-space: pre-wrap; word-break: break-word; }
-.u .imgs { display: flex; gap: 6px; flex-wrap: wrap; margin: 4px 0 6px; }
-.u .imgs button { border: 0; padding: 0; background: none; border-radius: 10px; overflow: hidden; box-shadow: 0 0 0 1.5px var(--line); }
-.u .imgs img { width: 86px; height: 86px; object-fit: cover; display: block; background: var(--surface-2); }
+.imgs { display: flex; gap: 6px; flex-wrap: wrap; margin: 4px 0 6px; }
+.imgs.seen { margin: 2px 0 6px; }
+.imgs.seen button { max-width: 100%; }
+.imgs.seen img { width: auto; max-width: 100%; height: 132px; min-width: 64px; object-fit: contain; }
+.imgs button { border: 0; padding: 0; background: none; border-radius: 10px; overflow: hidden; box-shadow: 0 0 0 1.5px var(--line); }
+.imgs img { width: 86px; height: 86px; object-fit: cover; display: block; background: var(--surface-2); }
 .u .ft { font-size: 12.5px; color: var(--muted); margin-top: 2px; text-align: right; display: flex; justify-content: flex-end; align-items: center; gap: 6px; }
 .u .ft .q { color: var(--accent); }
 .u .ft .i { width: 13px; height: 13px; }
@@ -183,7 +186,7 @@ html.phone #app {
 .agentbar:empty { display: none; }
 .agentbar .seg { margin: 2px 0 0; }
 .card .m .ag { font: 600 12px/1.5 var(--mono); color: var(--ink-2); }
-.card .m .ag.codex { color: var(--accent); }
+.card .m .ag.codex, .card .m .ag.dsh { color: var(--accent); }
 .tools .dt { margin: 0 0 8px 26px; padding: 8px 10px; background: color-mix(in srgb, var(--surface) 70%, transparent); color: var(--ink-2); white-space: pre-wrap; word-break: break-word; max-height: 280px; overflow: auto; border-radius: 8px; font: 12px/1.5 var(--mono); box-shadow: inset 0 0 0 1px var(--line-2); }
 .tools .dt .o { color: var(--muted); display: block; margin-top: 6px; }
 @media (prefers-reduced-motion: no-preference) {
@@ -193,6 +196,11 @@ html.phone #app {
 
 .note { align-self: center; display: inline-flex; gap: 6px; align-items: flex-start; font-size: 14px; color: var(--muted); max-width: 92%; white-space: pre-wrap; line-height: 1.5; }
 .note .i { margin-top: 2px; }
+.ask { align-self: stretch; padding: 10px 14px; font-size: 14px; line-height: 1.5; color: var(--ink-2); }
+.ask b { display: block; color: var(--ink); font-weight: 600; }
+.ask p { margin: 4px 0 0; }
+.ask small { display: block; margin-top: 6px; color: var(--muted); }
+.ask .acts { display: flex; gap: 8px; margin-top: 8px; }
 .note.error { color: var(--danger); }
 .res { align-self: flex-start; font-size: 13px; color: var(--muted); margin: -6px 8px 2px; display: flex; gap: 10px; flex-wrap: wrap; }
 .res.bad { color: var(--danger); }

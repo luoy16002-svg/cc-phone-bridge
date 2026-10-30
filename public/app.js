@@ -571,15 +571,17 @@
   }
 
   // ---------------------------------------------------------------- what the computer told us
-  // Two agents can run on the computer: Claude Code, and Codex when it is installed there.
-  const AGENTS = { claude: 'Claude Code', codex: 'Codex' };
-  const agentOf = (s) => (s && s.agent === 'codex' ? 'codex' : 'claude');
+  // The agents on the computer: Claude Code, and Codex and DeepSeek Harness when they are installed there.
+  const AGENTS = { claude: 'Claude Code', codex: 'Codex', dsh: 'DeepSeek' };
+  const agentOf = (s) => (s && (s.agent === 'codex' || s.agent === 'dsh') ? s.agent : 'claude');
   const agentInfo = (a) => (S.agents && S.agents[a]) || (a === 'claude' ? { available: true, models: S.models || [], efforts: S.efforts, defaults: S.defaults } : { available: false });
   const hasCodex = () => !!agentInfo('codex').available;
+  const agentsOn = () => Object.keys(AGENTS).filter((a) => agentInfo(a).available);
+  const severalAgents = () => agentsOn().length > 1;
 
   function modelName(id, agent) {
     const m = (agentInfo(agent || 'claude').models || []).find((x) => x.id === id)
-      || (agentInfo('codex').models || []).find((x) => x.id === id) || (S.models || []).find((x) => x.id === id);
+      || (agentInfo('codex').models || []).find((x) => x.id === id) || (agentInfo('dsh').models || []).find((x) => x.id === id) || (S.models || []).find((x) => x.id === id);
     if (m) return m.name;
     const r = /^claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?(?:-|$)/.exec(id || '');
     return r ? `${r[1][0].toUpperCase()}${r[1].slice(1)} ${r[2]}${r[3] ? `.${r[3]}` : ''}` : (id || '');
@@ -622,6 +624,7 @@
       const m = (agentInfo('codex').models || []).find((x) => x.id === model);
       return m && m.efforts.length ? m.efforts : ['low', 'medium', 'high', 'xhigh', 'max'];
     }
+    if (agent === 'dsh') return agentInfo('dsh').efforts || ['high', 'max'];
     return agentInfo('claude').efforts || S.efforts || ['low', 'medium', 'high', 'xhigh', 'max'];
   }
   const effortOptions = (agent, model) => effortList(agent, model).map((e) => ({ value: e, label: e }));
@@ -629,7 +632,7 @@
     const list = effortList(agent, model);
     if (list.includes(effort)) return effort;
     const m = agent === 'codex' ? (agentInfo('codex').models || []).find((x) => x.id === model) : null;
-    return (m && list.includes(m.defaultEffort) && m.defaultEffort) || list[Math.min(list.length - 1, 2)] || effort;
+    return (m && list.includes(m.defaultEffort) && m.defaultEffort) || (agent === 'dsh' ? list[0] : list[Math.min(list.length - 1, 2)]) || effort;
   };
   // the model and effort pickers, redrawn when the model changes what efforts there are
   function pickers(agent, model, effort, onChange) {
@@ -679,12 +682,12 @@
     // which agent's conversations the list shows; remembered on this device
     let only = LS.get('deskAgent', 'all');
     const drawFilter = () => {
-      if (!hasCodex()) {
+      if (!severalAgents()) {
         filterBox.replaceChildren();
         only = 'all';
         return;
       }
-      filterBox.replaceChildren(seg([{ value: 'all', label: t('全部') }, { value: 'claude', label: AGENTS.claude }, { value: 'codex', label: AGENTS.codex }],
+      filterBox.replaceChildren(seg([{ value: 'all', label: t('全部') }, ...agentsOn().map((a) => ({ value: a, label: AGENTS[a] }))],
         only, (v) => { only = v; LS.set('deskAgent', v); draw(); }, t('显示哪些对话')));
     };
     const shown = () => (only === 'all' ? list : list.filter((s) => agentOf(s) === only));
@@ -723,7 +726,7 @@
     const card = (s) => h('button', { class: 'card', type: 'button', onclick: () => go(`#/s/${s.id}`) },
       h('div', { class: 't' }, s.title || t('新对话')),
       h('div', { class: 'p' }, s.state === 'running' ? (s.lastPrompt ? t('在做：{text}', { text: s.lastPrompt }) : t('在做…')) : (s.lastReply || s.lastPrompt || t('还没有回复'))),
-      h('div', { class: 'm' }, ...statusOf(s), hasCodex() ? h('span', { class: `ag ${agentOf(s)}` }, AGENTS[agentOf(s)]) : null,
+      h('div', { class: 'm' }, ...statusOf(s), severalAgents() ? h('span', { class: `ag ${agentOf(s)}` }, AGENTS[agentOf(s)]) : null,
         h('span', null, s.folder), h('span', null, s.lastModel || s.modelName), h('span', null, ago(s.updatedAt))));
     const draw = () => {
       const running = list.filter(busyNow).length;
@@ -906,8 +909,8 @@
     stopAll();
     if (!S.defaults) await loadState().catch(() => null);
     let cwd = LS.get('lastCwd', '');
-    let agent = hasCodex() ? LS.get('newAgent', 'claude') : 'claude';
-    if (agent === 'codex' && !hasCodex()) agent = 'claude';
+    let agent = LS.get('newAgent', 'claude');
+    if (!agentInfo(agent).available) agent = 'claude';
     const defaultsOf = (a) => agentInfo(a).defaults || {};
     let model = defaultsOf(agent).model || '';
     let effort = defaultsOf(agent).effort || 'high';
@@ -945,16 +948,16 @@
     const comp = composer({
       placeholder: ask(agent),
       draftKey: 'new',
-      onSend: async (text, images) => {
+      onSend: async (text, images, cid) => {
         if (!cwd) throw Object.assign(new Error('no folder'), { shown: t('先选一个文件夹') });
         toast(t('正在开始…'));
         try {
-          const r = await api('POST', '/api/sessions', { agent, cwd, model, effort, text, images });
+          const r = await api('POST', '/api/sessions', { agent, cwd, model, effort, text, images }, cid);
           go(`#/s/${r.id}`);
         } catch (e) {
           if (e.message === 'outside_roots') e.shown = t('这个文件夹不在电脑允许的范围里');
           else if (e.message === 'no_such_dir') e.shown = t('这个文件夹已经不在了');
-          else if (e.status === 502 || e.message === 'codex_unavailable') e.shown = t('{agent} 没能启动', { agent: AGENTS[agent] });
+          else if (e.status === 502 || e.message === 'codex_unavailable' || e.message === 'dsh_unavailable') e.shown = t('{agent} 没能启动', { agent: AGENTS[agent] });
           throw e;
         }
       },
@@ -964,11 +967,11 @@
     const drawTune = () => {
       const d = defaultsOf(agent);
       tune.replaceChildren(pickers(agent, model, effort, (m, e) => { model = m; effort = e; }),
-        h('p', null, d.model ? t('默认和电脑上一样：{model} · {effort}', { model: d.modelName || modelName(d.model, agent), effort: d.effort }) : ''));
+        h('p', null, d.model ? t('默认和电脑上一样：{model} · {effort}', { model: d.modelName || modelName(d.model, agent), effort: d.effort || effort }) : ''));
     };
     drawTune();
-    const who = hasCodex() ? h('div', { class: 'form' }, h('h2', null, t('交给谁')),
-      seg([{ value: 'claude', label: AGENTS.claude }, { value: 'codex', label: AGENTS.codex }], agent, (v) => {
+    const who = severalAgents() ? h('div', { class: 'form' }, h('h2', null, t('交给谁')),
+      seg(agentsOn().map((a) => ({ value: a, label: AGENTS[a] })), agent, (v) => {
         if (v === agent) return;
         agent = v;
         LS.set('newAgent', v);
@@ -995,6 +998,30 @@
   const runningTool = (name) => t('在执行 {name}', { name });
   const STOPPED = ['aborted_tools', 'aborted_streaming', 'stopped', 'interrupted'];
   const blobs = new Map();
+
+  // Pictures are fetched when they come near the screen; the long history above them costs nothing.
+  const lazy = 'IntersectionObserver' in window ? new IntersectionObserver((seen) => {
+    for (const x of seen) {
+      if (!x.isIntersecting) continue;
+      lazy.unobserve(x.target);
+      authedImage(x.target.dataset.ref, x.target);
+    }
+  }, { rootMargin: '600px 0px' }) : null;
+
+  function picture(ref) {
+    const img = h('img', { alt: t('附图') });
+    if (lazy) {
+      img.dataset.ref = ref;
+      lazy.observe(img);
+    } else authedImage(ref, img);
+    return h('button', { type: 'button', 'aria-label': t('看大图'), onclick: () => viewImage(img.src) }, img);
+  }
+
+  // A picture list from the record: references, or only how many when they could not be kept.
+  function pictures(images, cls = '') {
+    if (Array.isArray(images) && images.length) return h('div', { class: `imgs ${cls}` }, images.map(picture));
+    return typeof images === 'number' && images > 0 ? h('div', { class: 'imgchip' }, icon('photo', 'xs'), images > 1 ? t('{n} 张图', { n: images }) : t('图片')) : null;
+  }
 
   async function authedImage(ref, img) {
     if (!blobs.has(ref)) {
@@ -1041,6 +1068,7 @@
             drawHeader();
             return branchOff(C, { text, images }, newCid());
           }
+          if (e.message === 'dsh_held') e.shown = t('电脑上的 DeepSeek Harness 开着这个对话，这条没发出去，草稿还在');
           if (e.message === 'pc_waiting') e.shown = t('电脑上正等你回答一个问题，在电脑上答完再发');
           if (e.message === 'pc_unreachable' && await askBackground()) {
             // the window would not take typing: the person chose to go on without it
@@ -1068,7 +1096,9 @@
 
     const pcBusy = () => C.pc.busy && C.state !== 'running';
     // Codex on the computer has the thread open: only it can write the thread, so the phone goes on in a branch
-    const heldByPc = () => C.pc.held && C.state !== 'running' && !pcBusy();
+    const heldByPc = () => C.pc.held && agentOf(C.session) === 'codex' && C.state !== 'running' && !pcBusy();
+    // DeepSeek Harness on the computer has the session: one writer at a time, and it cannot branch from here
+    const dshHeld = () => C.pc.held && agentOf(C.session) === 'dsh' && C.state !== 'running' && !pcBusy();
     // Claude Code open in a window on the computer: what the phone sends is typed into that window
     const pcTypes = () => C.pc.open && C.pc.typable && C.state !== 'running';
     const pcWaits = () => pcTypes() && C.pc.waiting;
@@ -1084,7 +1114,7 @@
       comp.setBlocked(pcWaits() ? t('电脑上正等你回答一个问题，在电脑上答完再发') : pcBusy() && !pcTypes() ? t('电脑上正在做这个对话，做完再发') : '');
       comp.setNote(!pcTypes() ? '' : pcBusy() ? t('这条会排进电脑上的窗口，做完手上这一步就接上') : t('这条会输入到电脑上开着的窗口'));
       comp.setBranch(heldByPc() ? t('电脑上开着这个对话，这条会发到新分支里') : '');
-      pcNote.hidden = !C.pc.open && !pcBusy() && !heldByPc();
+      pcNote.hidden = !C.pc.open && !pcBusy() && !heldByPc() && !dshHeld();
       const what = t(WAITS[C.pc.waitingFor] || '一个需要你处理的界面');
       pcNote.replaceChildren(...(pcWaits()
         ? [icon('alert-triangle', 'xs'), h('span', null, t('电脑上的窗口正等你回答{what}。在电脑上处理完，手机上才能接着发。', { what }))]
@@ -1094,6 +1124,8 @@
             : t('电脑上正在做这个对话，这里跟着实时显示。等它做完，手机上就能接着发。'))]
           : heldByPc()
             ? [icon('git-branch', 'xs'), h('span', null, t('电脑上的 Codex 正开着这个对话，只有它能接着写。这里发出的消息会从最新一轮分出一个新对话，原对话不动。'))]
+            : dshHeld()
+              ? [icon('device-desktop', 'xs'), h('span', null, t('电脑上的 DeepSeek Harness 正开着这个对话，手机上可以看。要接着写，先在电脑上退出 DeepSeek Harness，或者在电脑上发。'))]
             : [icon('device-desktop', 'xs'), h('span', null, pcTypes()
               ? t('这个对话在电脑上开着。手机上发的会输入到那个窗口，电脑上能看到全过程。')
               : t('这个对话在电脑上也开着。手机上发的会接在后面，电脑那个窗口要重新打开才看得到。'))]));
@@ -1183,6 +1215,10 @@
             group = null;
             add({ key: `n${e.id}`, type: 'note', e }, e.t);
             break;
+          case 'ask':
+            group = null;
+            add({ key: `a${e.id}`, type: 'ask', e }, e.t);
+            break;
           case 'result':
             group = null;
             add({ key: `x${e.id}`, type: 'result', e, model: turn?.model || '' }, e.t);
@@ -1200,7 +1236,8 @@
       }
       for (const b of out) {
         if (b.type === 'user') b.ver = `${b.e.state || ''}${C.state}`;
-        else if (b.type === 'tools') b.ver = `${b.lines.length}.${b.lines.filter((l) => l.res).length}.${!!b.working}.${C.expanded.has(b.key)}.${b.lines.filter((l) => C.open.has(l.e.id)).map((l) => l.e.id).join()}`;
+        else if (b.type === 'ask') b.ver = b.e.state;
+        else if (b.type === 'tools') b.ver = `${b.lines.length}.${b.lines.filter((l) => l.res).length}.${shotsOf(b).length}.${!!b.working}.${C.expanded.has(b.key)}.${b.lines.filter((l) => C.open.has(l.e.id)).map((l) => l.e.id).join()}`;
         else if (b.type === 'day') b.ver = dayLabel(b.t);
         else if (b.type === 'turn') b.ver = `${b.ms}${b.model}`;
         else b.ver = `1${b.model || ''}`;
@@ -1209,26 +1246,41 @@
     }
 
     // A message the conversation can be branched from: one in the record (Codex: with the turn it opened).
-    const branchable = (e) => !e.pending && !e.state && !e.command && (agentOf(C.session) === 'codex' ? !!e.turn : /^[0-9a-f-]{36}$/i.test(e.id));
+    const branchable = (e) => !e.pending && !e.state && !e.command && agentOf(C.session) !== 'dsh' && (agentOf(C.session) === 'codex' ? !!e.turn : /^[0-9a-f-]{36}$/i.test(e.id));
 
     const STATES = { canceled: '已取消', pc: '正送到电脑上的窗口', pc_queued: '在电脑上排队', pc_failed: '电脑上的窗口没收到' };
 
     function drawUser(b) {
       const e = b.e;
       const st = e.state === 'queued' ? (C.state === 'running' ? t('排队中') : t('发送中')) : STATES[e.state] ? t(STATES[e.state]) : '';
-      const imgs = Array.isArray(e.images) ? e.images : [];
       const fork = C.session && branchable(e)
         ? h('button', { class: 'br', type: 'button', 'aria-label': t('从这里分支'), onclick: () => openBranch(C, e) }, icon('git-branch', 'xs'))
         : null;
       return h('div', { class: `u${e.state === 'canceled' || e.state === 'pc_failed' ? ' canceled' : ''}${e.command ? ' cmd' : ''}` },
-        imgs.length ? h('div', { class: 'imgs' }, imgs.map((ref) => {
-          const img = h('img', { alt: t('附图') });
-          authedImage(ref, img);
-          return h('button', { type: 'button', 'aria-label': t('看大图'), onclick: () => viewImage(img.src) }, img);
-        })) : null,
-        typeof e.images === 'number' && e.images > 0 ? h('div', { class: 'imgchip' }, icon('photo', 'xs'), e.images > 1 ? t('{n} 张图', { n: e.images }) : t('图片')) : null,
+        pictures(e.images),
         e.text ? h('div', { class: 'tx' }, e.text) : null,
         h('div', { class: 'ft' }, fork, st ? h('span', { class: 'q' }, st) : null, e.pending || e.state ? icon('device-mobile', 'xs') : null, e.t ? F.time.format(e.t) : ''));
+    }
+
+    // What the agent looked at in a run of steps: shown under it, folded or not.
+    const shotsOf = (b) => b.lines.flatMap((l) => (Array.isArray(l.res?.images) ? l.res.images : []));
+
+    function drawAsk(b) {
+      const e = b.e;
+      const answer = async (allow) => {
+        try {
+          await api('POST', `/api/sessions/${id}/answer`, { ask: e.id, allow }, newCid());
+        } catch {
+          toast(t('没发出去，再试一次'));
+        }
+      };
+      const done = { allowed: t('已允许'), rejected: t('已拒绝'), gone: t('这一轮已经结束') }[e.state];
+      return h('div', { class: 'ask' },
+        h('b', null, t('{name} 要运行，要允许吗？', { name: toolLabel(e.name) })),
+        e.reason ? h('p', null, e.reason) : null,
+        done ? h('small', null, done) : h('div', { class: 'acts' },
+          h('button', { class: 'btn small', type: 'button', onclick: () => answer(true) }, t('允许这一次')),
+          h('button', { class: 'btn small quiet', type: 'button', onclick: () => answer(false) }, t('拒绝'))));
     }
 
     function stepTime(l) {
@@ -1262,7 +1314,12 @@
         icon(expanded ? 'chevron-down' : 'chevron-right', 'xs'));
       hd.addEventListener('click', () => { if (C.expanded.has(b.key)) C.expanded.delete(b.key); else C.expanded.add(b.key); render(false); });
       const box = h('div', { class: 'tools' }, hd);
-      if (!expanded) return box;
+      const shots = shotsOf(b);
+      const strip = shots.length ? pictures(shots, 'seen') : null;
+      if (!expanded) {
+        if (strip) box.append(strip);
+        return box;
+      }
       for (const l of b.lines) {
         const e = l.e;
         const status = l.res ? (l.res.ok ? icon('check', 'xs') : icon('x', 'xs bad')) : h('span');
@@ -1272,6 +1329,7 @@
         box.append(ln);
         if (C.open.has(e.id)) box.append(h('div', { class: 'dt' }, e.detail || e.summary || '', l.res?.text ? h('span', { class: 'o' }, l.res.text) : null));
       }
+      if (strip) box.append(strip);
       return box;
     }
 
@@ -1288,6 +1346,7 @@
     function drawBlock(b) {
       if (b.type === 'user') return drawUser(b);
       if (b.type === 'text') return h('div', { class: 'a' }, md(b.e.text));
+      if (b.type === 'ask') return drawAsk(b);
       if (b.type === 'tools') return drawTools(b);
       if (b.type === 'note') return h('div', { class: `note ${b.e.tone || ''}` }, icon(b.e.tone === 'error' ? 'alert-triangle' : 'info-circle', 'xs'), b.e.key ? t(b.e.key, b.e.vars) : t(b.e.text));
       if (b.type === 'day') return h('div', { class: 'daysep' }, dayLabel(b.t));
@@ -1347,6 +1406,7 @@
       let what;
       if (running && C.activity) what = C.activity.what === 'tool' ? runningTool(C.activity.name) : ACT[C.activity.what] || t('在做');
       else what = !lastEv || lastEv.k === 'user' ? (running ? t('在启动') : t('在想')) : lastEv.k === 'tool' ? runningTool(lastEv.name) : t('在想');
+      if (events().some((e) => e.k === 'ask' && e.state === 'open')) what = t('等你确认');
       const since = running ? C.since : C.pcSince;
       activity.replaceChildren(h('span', { class: 'dot run' }), h('b', null, running ? what : t('电脑上{what}', { what })), t('已用 {time}', { time: dur(Date.now() - (since || Date.now())) }));
     }
@@ -1393,7 +1453,7 @@
         }
         // a message the transcript does not hold yet stays on screen: it is only gone once the history has it
         for (const [k, e] of [...C.live]) {
-          const keep = (e.k === 'user' && e.state && e.state !== 'canceled' && !ids.has(k)) || k === lastResult;
+          const keep = (e.k === 'user' && e.state && e.state !== 'canceled' && !ids.has(k)) || (e.k === 'ask' && !ids.has(k)) || k === lastResult;
           if (!keep) C.live.delete(k);
         }
         schedule();
@@ -1601,13 +1661,14 @@
   function openMenu(C) {
     const s = C.session;
     if (!s) return;
+    const dshChat = agentOf(s) === 'dsh';
     const cmd = (agentOf(s) === 'codex' ? agentInfo('codex').resume || 'codex resume {id}' : S.server?.resume || 'claude --resume {id}').replace('{id}', s.id);
     const copyBox = h('div', { class: 'cmd' }, cmd);
     let close = null;
     close = sheet(h('div', null,
       h('button', { type: 'button', onclick: () => { close(); openPrefs(C, () => C.redraw?.()); } }, icon('cpu', 'sm'), t('模型和思考强度')),
-      h('button', { type: 'button', onclick: () => { close(); openBranch(C, null); } }, icon('git-branch', 'sm'), t('分支这个对话')),
-      h('button', { type: 'button', onclick: async () => {
+      dshChat ? null : h('button', { type: 'button', onclick: () => { close(); openBranch(C, null); } }, icon('git-branch', 'sm'), t('分支这个对话')),
+      dshChat ? null : h('button', { type: 'button', onclick: async () => {
         let ok = false;
         try {
           await navigator.clipboard.writeText(cmd);
@@ -1624,7 +1685,7 @@
         }
         toast(ok ? t('已复制。在电脑的终端里，进到下面的文件夹再粘贴') : t('长按下面这行复制'));
       } }, icon('copy', 'sm'), t('在电脑上接着这个对话')),
-      copyBox,
+      dshChat ? null : copyBox,
       h('div', { class: 'cmd dim' }, t('文件夹：{path}', { path: s.cwd }))));
   }
 
@@ -1741,6 +1802,7 @@
             h('dt', null, t('连接')), h('dd', { class: 'plain' }, srv.scheme === 'https' ? t('HTTPS 加密') : t('HTTP，只在局域网里')),
             h('dt', null, 'Claude Code'), h('dd', null, srv.claude || ''),
             ...(srv.codex ? [h('dt', null, 'Codex'), h('dd', null, srv.codex)] : []),
+            ...(srv.dsh ? [h('dt', null, 'DeepSeek Harness'), h('dd', null, srv.dsh)] : []),
             h('dt', null, t('值班台')), h('dd', null, srv.version || ''))),
         h('div', { class: 'form' }, leave, sure)),
       h('div')));
@@ -1755,7 +1817,7 @@
       history.replaceState(null, '', location.pathname + (S.token ? '#/' : '#/pair'));
     }
     if (!S.token) return showPair();
-    const m = /^#\/s\/([0-9a-f-]{36})/.exec(location.hash);
+    const m = /^#\/s\/([0-9a-z-]{36,44})/.exec(location.hash);
     if (m) return showSession(m[1]);
     if (location.hash.startsWith('#/new')) return showNew();
     if (location.hash.startsWith('#/settings')) return showSettings();

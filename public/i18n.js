@@ -291,6 +291,15 @@
     '正送到电脑上的窗口': "On its way to the window",
     '在电脑上排队': "Queued on the computer",
     '电脑上的窗口没收到': "The window did not take it",
+    '电脑上的 DeepSeek Harness 开着这个对话，这条没发出去，草稿还在': "DeepSeek Harness has this conversation open on the computer. Not sent; your draft is still here",
+    '电脑上的 DeepSeek Harness 正开着这个对话，手机上可以看。要接着写，先在电脑上退出 DeepSeek Harness，或者在电脑上发。': "DeepSeek Harness has this conversation open on the computer. You can read it here; to write, quit DeepSeek Harness there first, or send from the computer.",
+    '已允许': "Allowed",
+    '已拒绝': "Refused",
+    '这一轮已经结束': "That turn is over",
+    '{name} 要运行，要允许吗？': "Allow {name} to run?",
+    '允许这一次': "Allow once",
+    '拒绝': "Refuse",
+    等你确认: 'Waiting for your go-ahead',
   };
 
   const LANGS = { en: EN };

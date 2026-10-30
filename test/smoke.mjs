@@ -28,7 +28,7 @@ const ntfy = http.createServer((req, res) => {
     res.end('ok');
   });
 }).listen(NTFY_PORT, '127.0.0.1');
-fs.writeFileSync(path.join(DATA, 'config.json'), JSON.stringify({ roots: [PROJ], timeZone: 'America/Los_Angeles', suggestions: { file: SUGG }, codex: { enabled: false }, push: { ntfyServer: `http://127.0.0.1:${NTFY_PORT}`, ntfyTopic: 'test' } }));
+fs.writeFileSync(path.join(DATA, 'config.json'), JSON.stringify({ roots: [PROJ], timeZone: 'America/Los_Angeles', suggestions: { file: SUGG }, codex: { enabled: false }, dsh: { enabled: false }, push: { ntfyServer: `http://127.0.0.1:${NTFY_PORT}`, ntfyTopic: 'test' } }));
 fs.writeFileSync(path.join(DATA, 'settings.json'), JSON.stringify({ pushOnFinish: false }));
 fs.writeFileSync(path.join(CONF, 'settings.json'), JSON.stringify({ model: 'opus', modelSettings: { 'claude-opus-5-5': { effortLevel: 'xhigh' } } }));
 process.env.CCPB_CONFIG_DIR = CONF;
@@ -243,7 +243,18 @@ async function main() {
   check('picture needs the token', (await fetch(`${BASE}/api/files/${ref}`)).status === 401);
   check('bad image type refused', (await api('POST', `/api/sessions/${pcId}/messages`, { text: 'x', images: [{ type: 'text/html', data: 'PGI+' }] })).status === 400);
   const hImg = (await api('GET', `/api/sessions/${pcId}`)).data.events;
-  check('history shows a picture was sent', hImg.some((e) => e.k === 'user' && e.text === 'look' && e.images === 1));
+  const sentPic = hImg.find((e) => e.k === 'user' && e.text === 'look');
+  check('history shows the picture that was sent', /^img\/[0-9a-f]{32}\.png$/.test(sentPic?.images?.[0] || ''), JSON.stringify(sentPic?.images));
+  const fetched = await fetch(`${BASE}/api/files/${sentPic?.images?.[0]}`, { headers: { Authorization: `Bearer ${token}` } });
+  check('it can be fetched, and the phone may keep it', fetched.status === 200 && /immutable/.test(fetched.headers.get('cache-control')) && Buffer.from(await fetched.arrayBuffer()).equals(Buffer.from(png1x1, 'base64')));
+  await api('POST', `/api/sessions/${pcId}/messages`, { text: '看一张图' });
+  const shot = await L.until((e) => e.k === 'tool_result' && e.tool === 'tool-img' && Array.isArray(e.images));
+  check('a picture the agent looked at reaches the phone live', shot?.images?.[0] === sentPic?.images?.[0], JSON.stringify(shot));
+  await L.until((e) => e.k === 'text' && e.text === '收到：看一张图 (xhigh)');
+  await sleep(200);
+  const inHist = (await api('GET', `/api/sessions/${pcId}`)).data.events.find((e) => e.k === 'tool_result' && e.tool === 'tool-img');
+  check('and stays in the history', inHist?.images?.[0] === sentPic?.images?.[0], JSON.stringify(inHist));
+  check('a made-up picture name is refused', (await api('GET', '/api/files/img/nothing.png')).status === 400);
 
   console.log('model and effort');
   const pr = await api('PUT', `/api/sessions/${pcId}/prefs`, { model: 'claude-haiku-5-5', effort: 'low' });

@@ -28,7 +28,7 @@ const ROOTDIR = path.join(PROJ, 'Projects');
 for (const d of ['notes-app', 'english', 'blog', 'cafe-site', 'photo-tools', 'scripts']) fs.mkdirSync(path.join(ROOTDIR, d), { recursive: true });
 fs.mkdirSync(OUT, { recursive: true });
 const SUGG = path.join(DATA, 'suggestions.json');
-fs.writeFileSync(path.join(DATA, 'config.json'), JSON.stringify({ roots: [ROOTDIR], timeZone: 'America/Los_Angeles', lang: LANG, suggestions: { file: SUGG }, codex: { home: CXHOME } }));
+fs.writeFileSync(path.join(DATA, 'config.json'), JSON.stringify({ roots: [ROOTDIR], timeZone: 'America/Los_Angeles', dsh: { enabled: false }, lang: LANG, suggestions: { file: SUGG }, codex: { home: CXHOME } }));
 fs.writeFileSync(path.join(CXHOME, 'config.toml'), 'model = "fake-sol"\nmodel_reasoning_effort = "medium"\n');
 fs.writeFileSync(path.join(DATA, 'settings.json'), JSON.stringify({ pushOnFinish: true }));
 fs.writeFileSync(path.join(CONF, 'settings.json'), JSON.stringify({ model: 'opus', modelSettings: { 'claude-opus-5-5': { effortLevel: 'xhigh' } } }));

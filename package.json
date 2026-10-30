@@ -1,9 +1,9 @@
 {
   "name": "cc-phone-bridge",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "private": true,
   "type": "module",
-  "description": "Duty Desk: use Claude Code and Codex on your computer from your phone, over your own network.",
+  "description": "Duty Desk: use Claude Code, Codex and DeepSeek Harness on your computer from your phone, over your own network.",
   "license": "MIT",
   "author": "fuddle_yichi",
   "repository": {
@@ -14,6 +14,7 @@
     "claude-code",
     "claude",
     "codex",
+    "deepseek",
     "phone",
     "mobile",
     "pwa",
@@ -28,8 +29,9 @@
     "start": "node server.mjs",
     "build": "node build/build-assets.mjs",
     "prepare": "node build/build-assets.mjs",
-    "test": "node test/smoke.mjs && node test/codex.mjs && node test/i18n-check.mjs",
+    "test": "node test/smoke.mjs && node test/codex.mjs && node test/dsh.mjs && node test/i18n-check.mjs",
     "test:codex-real": "node test/codex-real.mjs",
+    "test:dsh-real": "node test/dsh-real.mjs",
     "shots": "node test/shots.mjs"
   },
   "dependencies": {

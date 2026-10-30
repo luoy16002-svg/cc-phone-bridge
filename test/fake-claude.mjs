@@ -74,7 +74,7 @@ async function turn(msg) {
   const earlier = fs.existsSync(file) ? fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l))
     .filter((o) => o.type === 'user' && Array.isArray(o.message?.content) && o.message.content[0]?.type === 'text').map((o) => o.message.content[0].text) : [];
   out({ type: 'system', subtype: 'init', model, cwd: process.cwd(), tools: [] });
-  save({ type: 'user', uuid: msg.uuid || crypto.randomUUID(), message: { role: 'user', content: msg.message.content.map((c) => (c.type === 'image' ? { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AA==' } } : c)) } });
+  save({ type: 'user', uuid: msg.uuid || crypto.randomUUID(), message: { role: 'user', content: msg.message.content.map((c) => (c.type === 'image' ? { type: 'image', source: { type: 'base64', media_type: 'image/png', data: c.source?.data || 'AA==' } } : c)) } });
   fs.appendFileSync(file, `${JSON.stringify({ type: 'last-prompt', lastPrompt: text, sessionId: session })}\n`);
   if (/crash/.test(text)) {
     process.stderr.write('boom: fake crash\n');
@@ -99,6 +99,11 @@ async function turn(msg) {
     out({ type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', name: 'Read' } } });
     assistant([{ type: 'tool_use', id: 'tool-read', name: 'Read', input: { file_path: path.join(process.cwd(), 'README.md') } }]);
     toolResult('tool-read', [{ type: 'text', text: 'line one\nline two' }]);
+  }
+  if (/看一张图/.test(text)) {
+    const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+    assistant([{ type: 'tool_use', id: 'tool-img', name: 'Read', input: { file_path: path.join(process.cwd(), 'a.png') } }]);
+    toolResult('tool-img', [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: png } }]);
   }
   if (/stall/.test(text)) {
     // the reply reaches the transcript, but the output to the bridge goes quiet for a while

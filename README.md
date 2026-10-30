@@ -116,6 +116,18 @@ When the Codex CLI is on the computer, Duty Desk talks to it through Codex's own
 - The phone holds a conversation only while its turn runs and lets go a few seconds after, leaving no lock behind, so the Codex app or the CLI can open it right away and finds what the phone wrote.
 - The lock is read directly on Windows. Elsewhere Codex's lock cannot be read from outside, so the phone learns a conversation is held when Codex turns its message away, and the next one goes to a branch.
 
+## DeepSeek Harness
+
+When the DeepSeek Harness desktop app is installed, its conversations join the list, marked DeepSeek. Duty Desk reads them from the harness's own session logs (Node 22.15 or newer, for zstd) and runs each turn from the phone in the harness's SDK runtime, with what you set up for the desktop app (its `profiles/desktop` patch, so your own providers work) and the conversation's own permissions. The model list shows the models your conversations use. A step that needs your go-ahead shows as a card with Allow and Refuse, and sends a note if you are away.
+
+A harness session has one writer at a time, and the desktop app keeps every session it has opened until it quits. On such a session the phone reads and follows, says the computer has it, and keeps your draft. New conversations from the phone are not affected, and the phone lets go a few seconds after each turn, so the desktop app can continue them. Branches are not available for harness conversations.
+
+Settings: `dsh.enabled`, `dsh.home` (default `DSH_HOME`, then `~/.dsh`), `dsh.app` (the desktop app's folder), `dsh.command` (a `dsh` program instead), `dsh.provider` and `dsh.models` (used until there is a conversation to take them from), `dsh.efforts`.
+
+## Pictures
+
+Pictures an agent read show under its steps, and pictures in a conversation show in its history, for every agent. Each is kept once in the data folder under the hash of its bytes, fetched when it comes near the screen and then served from the phone's cache. `limits.imageMB` caps the copies.
+
 ## Branches
 
 Every message you sent has a branch button. A branch from a message is a new conversation with everything before that message; the message is ready to edit, and sending it starts the branch. The menu's **Branch this conversation** keeps all of it. The original conversation stays as it was, and the branch says where it came from.

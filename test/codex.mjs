@@ -17,7 +17,7 @@ const HOME = tmp('ccpb-cx-home-');
 const PROJ = tmp('ccpb-cx-projects-');
 const CWD = path.join(PROJ, 'demo');
 fs.mkdirSync(CWD);
-fs.writeFileSync(path.join(DATA, 'config.json'), JSON.stringify({ roots: [PROJ], timeZone: 'America/Los_Angeles', codex: { home: HOME } }));
+fs.writeFileSync(path.join(DATA, 'config.json'), JSON.stringify({ roots: [PROJ], timeZone: 'America/Los_Angeles', dsh: { enabled: false }, codex: { home: HOME } }));
 fs.writeFileSync(path.join(DATA, 'settings.json'), JSON.stringify({ pushOnFinish: false }));
 fs.writeFileSync(path.join(HOME, 'config.toml'), 'model = "fake-sol"\nmodel_reasoning_effort = "max"\n\n[profiles.x]\nmodel = "other"\n');
 
@@ -285,6 +285,15 @@ try {
   check('prefs refuse unknown model and effort', bad.body.session?.model === 'fake-sol' && bad.body.session?.effort === 'max');
   const older = await api('GET', `/api/sessions/${SEED}/history?before=2`);
   check('older history pages with an opaque cursor', older.status === 200 && Array.isArray(older.body.events));
+
+  // a picture Codex looked at, as a rollout records it: run in this process, with its own data folder
+  process.env.CCPB_DATA = DATA;
+  const { rolloutLineEvents } = await import('../lib/codex.mjs');
+  const png = path.join(DATA, 'looked-at.png');
+  fs.writeFileSync(png, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64'));
+  const seen = [];
+  rolloutLineEvents({ type: 'event_msg', timestamp: new Date().toISOString(), payload: { type: 'item_completed', turn_id: 't', item: { type: 'imageView', id: 'img-1', path: png } } }, DATA, seen);
+  check('a picture Codex looked at reaches the phone', /^img\/[0-9a-f]{32}\.png$/.test(seen.find((e) => e.k === 'tool_result')?.images?.[0] || ''), JSON.stringify(seen));
 
   const nope = await api('GET', `/api/sessions/${crypto.randomUUID()}`);
   check('unknown ids are 404', nope.status === 404);

@@ -20,13 +20,15 @@ import { configDir, projectKey, listSessions, sessionFile, sessionMeta, historyP
 import { CodexHub, CodexRunner, rolloutInfo, rolloutLineEvents, rolloutId, codexHome, findRollout, threadLock, lockDir } from './lib/codex.mjs';
 import { push, hasPush } from './lib/push.mjs';
 import { windows as windowList, typeInto, messageSteps, stopSteps, normPrompt, helper as typeHelper, typingEnabled } from './lib/pcwindow.mjs';
+import { DshSessions, DshRunner, dshAvailable, dshVersion, dshModelName, changedFolder, sessionsDir, MODELS as DSH_MODELS, EFFORTS as DSH_EFFORTS } from './lib/dsh.mjs';
+import { imageFile, cleanImages } from './lib/images.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC = path.join(HERE, 'public');
 const VERSION = JSON.parse(fs.readFileSync(path.join(HERE, 'package.json'), 'utf8')).version;
 const MAX_BODY = 24 * 1024 * 1024;
 const IMAGE_TYPES = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/gif': 'gif' };
-const SID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const SID = /^(?:session-)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const TLS = !!(CONFIG.tls.cert && CONFIG.tls.key);
 
 const store = new Store(DATA_DIR);
@@ -49,6 +51,9 @@ function log(msg) {
 // Codex: one app server for every Codex thread the phone touches, started on first use.
 const hub = new CodexHub(log);
 hub.clientVersion = VERSION;
+// DeepSeek Harness: its session logs are the conversations, a runtime of its own runs each turn from the phone.
+const dsh = new DshSessions();
+const DSH_ON = dshAvailable();
 const oneLine = (s) => String(s || '').replace(/\s+/g, ' ').trim();
 const clip = (s, n) => {
   const t = oneLine(s);
@@ -247,10 +252,120 @@ async function branchOrigin(id, forkedFrom = '') {
 // Which agent a session id belongs to: a Claude Code transcript, or a Codex thread.
 async function agentOf(id) {
   const r = runners.get(id);
-  if (r) return r.agent === 'codex' ? 'codex' : 'claude';
+  if (r) return r.agent || 'claude';
+  if (DSH_ON && id.startsWith('session-')) {
+    if (!dsh.has(id)) await dsh.refresh();
+    return dsh.has(id) ? 'dsh' : null;
+  }
   if (sessionFile(id)) return 'claude';
   if (hub.available && await hub.lookup(id)) return 'codex';
   return null;
+}
+
+// ---- DeepSeek Harness conversations
+function dshDefaults() {
+  const recent = dsh.list(1)[0];
+  const model = recent?.model || DSH_MODELS()[0]?.id || '';
+  return { model, modelName: dshModelName(model), effort: recent?.effort || '', provider: recent?.provider || '' };
+}
+
+// The models the logs show in use, most recent first: each with its provider, which may be one of the person's own.
+// Only without any log, the configured list.
+function dshModels() {
+  const out = [];
+  for (const m of dsh.list(200)) if (m.model && !out.some((x) => x.id === m.model)) out.push({ id: m.model, name: dshModelName(m.model), provider: m.provider });
+  return out.length ? out : [...DSH_MODELS()];
+}
+
+const dshProvider = (model) => dshModels().find((m) => m.id === model)?.provider || dshDefaults().provider;
+
+function dshEffective(id, meta) {
+  const p = store.prefs[id] || {};
+  return { model: p.model || meta?.model || dshDefaults().model, effort: p.effort || meta?.effort || '' };
+}
+
+// The computer has it open when a turn from the phone was refused for it, until a later try gets through.
+const dshHeld = new Set();
+const dshPc = (id) => ({ k: 'pc', open: false, busy: runners.get(id)?.state === 'running' ? false : !!dsh.get(id)?.busy, held: dshHeld.has(id) });
+
+function dshSummary(meta) {
+  const r = runners.get(meta.id);
+  const eff = dshEffective(meta.id, meta);
+  const running = r?.state === 'running';
+  return {
+    agent: 'dsh', id: meta.id, title: meta.title, cwd: meta.cwd, folder: folderOf(meta.cwd), lastPrompt: meta.lastPrompt, lastReply: meta.lastReply,
+    lastModel: dshModelName(meta.model), updatedAt: Math.max(meta.updatedAt || 0, running ? Date.now() : 0),
+    model: eff.model, modelName: dshModelName(eff.model), effort: eff.effort,
+    state: r?.state || 'idle', queue: r?.queue.length || 0, openOnPc: false, held: dshHeld.has(meta.id), pcBusy: !running && !!meta.busy,
+  };
+}
+
+// A followed log: what it gained since last time goes to the phone. The log tells whether a turn runs on the computer.
+async function pollDshTail(id, t) {
+  if (t.reading) {
+    t.again = true;
+    return;
+  }
+  t.reading = true;
+  try {
+    const log = await dsh.open(id);
+    if (!log || !tails.has(id)) return;
+    const all = log.events || [];
+    if (t.seen > all.length) t.seen = all.length;
+    const fresh = all.slice(t.seen);
+    t.seen = all.length;
+    const r = runners.get(id);
+    const ours = r?.state === 'running';
+    const shown = ours ? new Set(r.live.map((e) => e.id)) : null;
+    for (const ev of fresh) {
+      if (shown?.has(ev.id)) continue;
+      broadcast(id, 'ev', ours ? ev : { ...ev, pc: true });
+    }
+    const busy = !ours && log.busy;
+    if (busy !== t.busy) {
+      t.busy = busy;
+      broadcast(id, 'tr', dshPc(id));
+      deskUpdate(id);
+    }
+  } finally {
+    t.reading = false;
+    if (t.again) {
+      t.again = false;
+      pollDshTail(id, t);
+    }
+  }
+}
+
+async function startDshTail(id) {
+  if (tails.has(id)) return;
+  const log = await dsh.open(id);
+  if (!log || tails.has(id)) return;
+  const t = { agent: 'dsh', seen: (log.events || []).length, busy: log.busy };
+  t.timer = setInterval(() => pollDshTail(id, t), CONFIG.limits.tailMs);
+  tails.set(id, t);
+}
+
+function watchDsh() {
+  if (!DSH_ON) return;
+  const seen = new Map();
+  let rescan = null;
+  try {
+    fs.mkdirSync(sessionsDir(), { recursive: true });
+    fs.watch(sessionsDir(), { recursive: true }, (_, name) => {
+      if (!/session(\.v\d+)?\.jsonl/.test(String(name || ''))) return;
+      const log = dsh.logOf(changedFolder(name));
+      if (!log?.id) {
+        rescan ??= setTimeout(() => { rescan = null; dsh.refresh(); }, 400);
+        return;
+      }
+      if (tails.has(log.id)) pollSoon(log.id);
+      if (!deskSubs.size || Date.now() - (seen.get(log.id) || 0) < 1500) return;
+      seen.set(log.id, Date.now());
+      deskUpdate(log.id);
+    });
+  } catch (e) {
+    log(`watching ${sessionsDir()} failed (${e.message}); DeepSeek Harness cards refresh with the list`);
+  }
 }
 
 async function codexModels() {
@@ -283,6 +398,12 @@ function deskUpdate(id) {
     const ids = [...deskPending];
     deskPending.clear();
     for (const sid of ids) {
+      const dl = dsh.get(sid);
+      if (dl) {
+        await dl.catchUp();
+        if (dl.lastPrompt || dl.lastReply) for (const res of deskSubs) sse(res, 'session', dshSummary(dl.meta()));
+        continue;
+      }
       const meta = metaFor(sid);
       if (meta && !meta.empty) {
         for (const res of deskSubs) sse(res, 'session', summary(meta, windows));
@@ -399,7 +520,7 @@ function pendingDone(id, p) {
 }
 
 // The same words (a message of pictures only: some picture), as the window wrote them down.
-const pendingMatch = (p, text, images) => p.norm === normPrompt(text) && (p.norm !== '' || images > 0);
+const pendingMatch = (p, text, images) => p.norm === normPrompt(text) && (p.norm !== '' || (images?.length ?? images) > 0);
 
 function pendingQueued(id, content) {
   const text = typeof content === 'string' ? content : '';
@@ -567,6 +688,7 @@ function pollSoon(id) {
     const t = tails.get(id);
     if (!t) return;
     if (t.agent === 'codex') pollCodexTail(id, t);
+    else if (t.agent === 'dsh') pollDshTail(id, t);
     else pollTail(id, t);
   }, 80));
 }
@@ -695,9 +817,15 @@ function pushText(how, name, took) {
   return `${name ? `“${name}”` : 'A conversation'} ${what} after ${took}`;
 }
 
-function notifyFinished(id, how, ms) {
+function titleFor(id) {
+  if (!CONFIG.push.includeTitle) return '';
   const cm = hub.threads.get(id);
-  const name = CONFIG.push.includeTitle ? String((cm ? cm.name || cm.preview : metaFor(id)?.title) || '').slice(0, 24) : '';
+  const dl = dsh.get(id);
+  return String((dl ? dl.meta().title : cm ? cm.name || cm.preview : metaFor(id)?.title) || '').slice(0, 24);
+}
+
+function notifyFinished(id, how, ms) {
+  const name = titleFor(id);
   push(store.settings, LANG === 'zh' ? '值班台' : 'Duty Desk', pushText(how, name, duration(ms)), log);
 }
 
@@ -726,8 +854,18 @@ function wire(r) {
     savePids();
     if (r.agent === 'codex' && r.id) setTimeout(() => lockChanged(r.id), 150);   // the phone let go of the thread
   });
+  r.on('ask', () => {
+    if (!r.id || watching(r.id)) return;
+    const name = titleFor(r.id);
+    push(store.settings, LANG === 'zh' ? '值班台' : 'Duty Desk', LANG === 'zh' ? `${name ? `「${name}」` : '一个对话'}要你确认一步操作` : `${name ? `“${name}”` : 'A conversation'} needs your go-ahead`, log);
+  });
   r.on('conflict', () => {
     if (!r.id) return;
+    if (r.agent === 'dsh') {
+      dshHeld.add(r.id);
+      broadcast(r.id, 'tr', dshPc(r.id));
+      return;
+    }
     conflicts.add(r.id);
     setTimeout(() => lockChanged(r.id), 150);
   });
@@ -759,7 +897,10 @@ function wire(r) {
 function runnerFor(id, meta, agent = 'claude') {
   let r = runners.get(id);
   if (r) return r;
-  if (agent === 'codex') {
+  if (agent === 'dsh') {
+    const eff = dshEffective(id, meta);
+    r = new DshRunner({ id, cwd: meta.cwd, model: eff.model, effort: eff.effort, provider: dshProvider(eff.model) }, log);
+  } else if (agent === 'codex') {
     const eff = codexEffective(id, meta);
     r = new CodexRunner({ id, cwd: meta.cwd, model: eff.model, effort: eff.effort, phoneNote: store.settings.phoneNote, idleMinutes: CONFIG.limits.idleMinutes }, hub, log);
   } else {
@@ -1079,7 +1220,7 @@ function pcState() {
     devices: store.devices.map(({ id, name, createdAt, lastSeenAt }) => ({ id, name, createdAt, lastSeenAt })),
     running: all.filter((r) => r.state === 'running').length,
     live: all.filter((r) => r.proc).length,
-    version: VERSION, claude: claudeCommand().version, codex: hub.version, push: hasPush(),
+    version: VERSION, claude: claudeCommand().version, codex: hub.version, dsh: DSH_ON ? dshVersion() : '', push: hasPush(),
   };
 }
 
@@ -1144,6 +1285,113 @@ function startRunner(r, content, shown) {
     r.once('finished', (ev) => { if (!r.id) done({ error: ev.reason || 'failed' }); });
     r.enqueue(content, shown);
   });
+}
+
+// What the phone sent, the way the harness's runtime takes it.
+function dshContent(text, blocks) {
+  const out = blocks.map((b) => ({ type: 'image', data: b.source.data, mimeType: b.source.media_type }));
+  return text || !out.length ? [{ type: 'text', text: text || (LANG === 'zh' ? '（见图）' : '(see the picture)') }, ...out] : out;
+}
+
+async function newDshSession(res, b, cwd) {
+  if (!DSH_ON) return json(res, 400, { error: 'dsh_unavailable' });
+  const d = dshDefaults();
+  const model = dshModels().some((x) => x.id === b.model) ? b.model : d.model;
+  const effort = DSH_EFFORTS().includes(b.effort) ? b.effort : '';
+  const text = String(b.text || '').slice(0, 20000).trim();
+  const { names, blocks } = takeImages(b.images);
+  if (!text && !names.length) return json(res, 400, { error: 'empty' });
+  const r = new DshRunner({ id: null, cwd, model, effort, provider: dshProvider(model) }, log);
+  const started = await startRunner(r, dshContent(text, blocks), { text, images: names });
+  if (started.error) {
+    log(`a new DeepSeek Harness session failed to start: ${started.error}`);
+    return json(res, 502, { error: started.error, detail: r.notes.map((n) => n.text).join('\n') });
+  }
+  return json(res, 200, { id: started.id, agent: 'dsh' });
+}
+
+// ---------------------------------------------------------------- DeepSeek Harness sessions from the phone
+async function handleDshSession(req, res, url, id, sub) {
+  const method = req.method;
+  const r0 = runners.get(id);
+  const log0 = dsh.get(id);
+  const meta = log0?.meta() || (r0 ? { id, cwd: r0.cwd, title: '', model: r0.model, effort: r0.effort, provider: r0.provider } : null);
+  if (!meta) return json(res, 404, { error: 'no_session' });
+
+  if (method === 'GET' && sub === '') {
+    const page = (log0 && await dsh.history(id, { want: 140 })) || { events: [], cursor: null, hasMore: false };
+    const r = runners.get(id);
+    const since = page.events.length ? page.events[0].t : 0;
+    const notes = r ? r.notes.filter((n) => n.t >= since && !r.live.includes(n)) : [];
+    const have = new Set(page.events.map((e) => e.id));
+    const waiting = r ? r.live.filter((e) => (e.k === 'user' && e.state && e.state !== 'canceled' || e.k === 'ask') && !have.has(e.id)) : [];
+    const events = [...page.events, ...notes, ...waiting].sort((a, b) => (a.t || 0) - (b.t || 0));
+    return json(res, 200, { session: { ...dshSummary(dsh.get(id)?.meta() || meta), from: null }, events, cursor: page.cursor, hasMore: page.hasMore });
+  }
+  if (method === 'GET' && sub === '/history') {
+    const before = Number(url.searchParams.get('before'));
+    if (!Number.isFinite(before)) return json(res, 400, { error: 'bad_cursor' });
+    return json(res, 200, (await dsh.history(id, { before, want: 140 })) || { events: [], cursor: null, hasMore: false });
+  }
+  if (method === 'GET' && sub === '/stream') {
+    openSse(req, res);
+    await startDshTail(id);
+    const r = runners.get(id);
+    sse(res, 'tr', { k: 'state', state: r?.state || 'idle', queue: r?.queue.length || 0 });
+    sse(res, 'tr', dshPc(id));
+    if (r) {
+      for (const ev of r.live) sse(res, 'ev', ev);
+      if (r.state === 'running') sse(res, 'tr', { k: 'live', text: '', activity: r.activity || null, since: r.turn?.start || Date.now() });
+    }
+    if (!subs.has(id)) subs.set(id, new Set());
+    subs.get(id).add(res);
+    req.on('close', () => {
+      subs.get(id)?.delete(res);
+      stopTail(id);
+    });
+    return undefined;
+  }
+  if (method === 'POST' && sub === '/messages') {
+    const b = await readBody(req);
+    const text = String(b.text || '').slice(0, 20000).trim();
+    const { names, blocks } = takeImages(b.images);
+    if (!text && !names.length) return json(res, 400, { error: 'empty' });
+    if (!fs.existsSync(meta.cwd)) return json(res, 400, { error: 'no_such_dir', cwd: meta.cwd });
+    const r = runnerFor(id, meta, 'dsh');
+    if (!r.proc) ensureCapacity(r);
+    try {
+      await r.ensure();                                   // the session is the computer's while its app has it open
+    } catch (e) {
+      if (!e.held) return json(res, 502, { error: 'dsh', detail: e.message });
+      dshHeld.add(id);
+      broadcast(id, 'tr', dshPc(id));
+      return json(res, 409, { error: 'dsh_held' });
+    }
+    if (dshHeld.delete(id)) broadcast(id, 'tr', dshPc(id));
+    const out = r.enqueue(dshContent(text, blocks), { text, images: names });
+    deskUpdate(id);
+    return json(res, 200, out);
+  }
+  if (method === 'POST' && sub === '/answer') {
+    const b = await readBody(req);
+    const r = runners.get(id);
+    return json(res, 200, { ok: !!r?.answer?.(String(b.ask || ''), !!b.allow) });
+  }
+  if (method === 'POST' && sub === '/interrupt') {
+    const r = runners.get(id);
+    return json(res, 200, { ok: r ? r.interrupt() : false });
+  }
+  if (method === 'PUT' && sub === '/prefs') {
+    const b = await readBody(req);
+    const cur = dshEffective(id, meta);
+    const next = { model: dshModels().some((x) => x.id === b.model) ? b.model : cur.model, effort: DSH_EFFORTS().includes(b.effort) ? b.effort : cur.effort };
+    store.prefs[id] = { ...store.prefs[id], ...next };
+    store.savePrefs();
+    const r = runners.get(id);
+    if (r) Object.assign(r, next, { provider: dshProvider(next.model) });
+    return json(res, 200, { session: dshSummary(dsh.get(id)?.meta() || meta) });
+  }
+  return json(res, 404, { error: 'not_found' });
 }
 
 const codexContent = (text, names) => ({ text: text || (LANG === 'zh' ? '（见图）' : '(see the picture)'), images: uploadPaths(names) });
@@ -1359,18 +1607,21 @@ async function handleApi(req, res, url, ip) {
     const codex = hub.available && cmodels.length
       ? { available: true, version: hub.version, models: cmodels, defaults: { model: cd.model, modelName: hub.modelName(cd.model), effort: cd.effort }, resume: CONFIG.codex.resumeCommand }
       : { available: false, reason: hub.reason || 'unavailable' };
+    if (DSH_ON) await dsh.refresh();
+    const dshInfo = DSH_ON ? { available: true, version: dshVersion(), models: dshModels(), efforts: DSH_EFFORTS(), defaults: dshDefaults() } : { available: false };
     return json(res, 200, {
       settings: publicSettings(),
       server: {
         lang: LANG, version: VERSION, host: os.hostname(), port: CONFIG.port, scheme: TLS ? 'https' : 'http', addresses: addresses(), claude: claudeCommand().version,
         codex: codex.available ? codex.version : '',
+        dsh: dshInfo.version || '',
         timeZone: CONFIG.timeZone, theme: { default: CONFIG.theme, light: themeFor('light'), dark: themeFor('dark') }, resume: CONFIG.claude.resumeCommand,
         typing: typingEnabled() && !!(await typeHelper()),
       },
       device: { id: device.id, name: device.name },
       models: MODELS, efforts: EFFORTS, themes: themes(),
       defaults: claudeDefaults,
-      agents: { claude: { available: true, models: MODELS, efforts: EFFORTS, defaults: claudeDefaults, resume: CONFIG.claude.resumeCommand }, codex },
+      agents: { claude: { available: true, models: MODELS, efforts: EFFORTS, defaults: claudeDefaults, resume: CONFIG.claude.resumeCommand }, codex, dsh: dshInfo },
     });
   }
   if (method === 'PUT' && p === '/api/settings') {
@@ -1402,6 +1653,13 @@ async function handleApi(req, res, url, ip) {
     return json(res, 200, { name, path: full });
   }
   if (method === 'GET' && p.startsWith('/api/files/')) {
+    // a picture from a conversation: named after its bytes, so it never changes and the phone may keep it
+    const pic = /^\/api\/files\/img\/([^/]+)$/.exec(p);
+    if (pic) {
+      const file = imageFile(pic[1]);
+      if (!file) return json(res, 400, { error: 'bad_name' });
+      return sendFile(req, res, file, { 'Cache-Control': 'private, max-age=31536000, immutable' });
+    }
     const m = /^\/api\/files\/([0-9a-f]{12})\/(\d\.(jpg|png|webp|gif))$/.exec(p);
     if (!m) return json(res, 400, { error: 'bad_name' });
     return sendFile(req, res, path.join(DATA_DIR, 'uploads', m[1], m[2]), { 'Cache-Control': 'private, max-age=86400' });
@@ -1419,8 +1677,12 @@ async function handleApi(req, res, url, ip) {
     const windows = pcWindows();
     const limit = Math.min(200, Number(url.searchParams.get('limit')) || 80);
     const which = url.searchParams.get('agent') || 'all';
-    const out = which === 'codex' ? [] : listSessions(limit).map((m) => summary(m, windows));
-    if (which !== 'claude' && hub.available) {
+    const out = which === 'all' || which === 'claude' ? listSessions(limit).map((m) => summary(m, windows)) : [];
+    if (DSH_ON && (which === 'all' || which === 'dsh')) {
+      await dsh.refresh();
+      for (const m of dsh.list(limit)) out.push(dshSummary(m));
+    }
+    if ((which === 'all' || which === 'codex') && hub.available) {
       try {
         for (const m of await hub.listThreads(limit)) out.push(codexSummary(m));
       } catch (e) {
@@ -1442,6 +1704,7 @@ async function handleApi(req, res, url, ip) {
     if (!b.cwd || !fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) return json(res, 400, { error: 'no_such_dir' });
     if (!inRoots(cwd)) return json(res, 403, { error: 'outside_roots' });
     if (b.agent === 'codex') return newCodexSession(res, b, cwd);
+    if (b.agent === 'dsh') return newDshSession(res, b, cwd);
     const d = defaults();
     const model = MODELS.some((m) => m.id === b.model) ? b.model : d.model;
     const effort = EFFORTS.includes(b.effort) ? b.effort : effortFor(model);
@@ -1458,11 +1721,13 @@ async function handleApi(req, res, url, ip) {
     return json(res, 200, { id: started.id });
   }
 
-  const m = /^\/api\/sessions\/([0-9a-f-]{36})(\/[a-z]+)?$/i.exec(p);
+  const m = /^\/api\/sessions\/([\w-]{36,44})(\/[a-z]+)?$/i.exec(p);
   if (!m || !SID.test(m[1])) return json(res, 404, { error: 'not_found' });
   const id = m[1].toLowerCase();
   const sub = m[2] || '';
-  if ((await agentOf(id)) === 'codex') return handleCodexSession(req, res, url, id, sub);
+  const who = await agentOf(id);
+  if (who === 'dsh') return handleDshSession(req, res, url, id, sub);
+  if (who === 'codex') return handleCodexSession(req, res, url, id, sub);
   const meta = metaFor(id) || (runners.get(id) ? { id, cwd: runners.get(id).cwd, title: '', model: runners.get(id).model } : null);
   if (!meta) return json(res, 404, { error: 'no_session' });
   const file = sessionFile(id);
@@ -1618,10 +1883,16 @@ if (typingEnabled()) {
     : 'typing into Claude Code windows: the helper could not be built, so conversations open in a window run on their own'));
 }
 cleanUploads();
-setInterval(cleanUploads, 6 * 3600 * 1000).unref();
+cleanImages(CONFIG.limits.imageMB, log);
+setInterval(() => {
+  cleanUploads();
+  cleanImages(CONFIG.limits.imageMB, log);
+}, 6 * 3600 * 1000).unref();
 watchProjects();
 watchCodex();
 watchCodexLocks();
+watchDsh();
+if (DSH_ON) dsh.refresh();
 server.listen(CONFIG.port, CONFIG.host, () => {
   const where = addresses().map((a) => `${TLS ? 'https' : 'http'}://${a.address}:${CONFIG.port}/`).join('  ');
   log(`cc-phone-bridge ${VERSION} on ${CONFIG.port} (${where}); data ${DATA_DIR}; config ${fs.existsSync(CONFIG_FILE) ? CONFIG_FILE : 'defaults'}; sessions ${configDir()}`);
