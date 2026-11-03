@@ -5,6 +5,7 @@
   const SVGNS = 'http://www.w3.org/2000/svg';
   const XLINK = 'http://www.w3.org/1999/xlink';
   const t = I18N.t;
+  const N_ = (s) => s;                                  // words shown later through t(), marked for the translation check
   document.title = t('值班台');
   document.querySelector('meta[name="apple-mobile-web-app-title"]')?.setAttribute('content', t('值班台'));
   const app = document.getElementById('app');
@@ -106,7 +107,12 @@
   }
   useTZ(LS.get('tz', undefined));
 
-  const dayKey = (ts) => F.key.format(ts);
+  // YYYY-MM-DD in the computer's time zone, so that later days compare as larger
+  const dayKey = (ts) => {
+    const p = F.key.formatToParts(ts);
+    const g = (type) => p.find((x) => x.type === type)?.value || '';
+    return `${g('year')}-${g('month')}-${g('day')}`;
+  };
   function dayLabel(ts) {
     const k = dayKey(ts);
     if (k === dayKey(Date.now())) return t('今天');
@@ -634,13 +640,17 @@
     const m = agent === 'codex' ? (agentInfo('codex').models || []).find((x) => x.id === model) : null;
     return (m && list.includes(m.defaultEffort) && m.defaultEffort) || (agent === 'dsh' ? list[0] : list[Math.min(list.length - 1, 2)]) || effort;
   };
-  // the model and effort pickers, redrawn when the model changes what efforts there are
-  function pickers(agent, model, effort, onChange) {
+  // the model and effort pickers, redrawn when the model changes what efforts there are; `fixedModel` says why the
+  // model is not chosen here (a window on the computer runs the conversation with its own)
+  function pickers(agent, model, effort, onChange, fixedModel = '') {
     const box = h('div', { class: 'pick' });
     const draw = () => {
       effort = fitEffort(agent, model, effort);
       box.replaceChildren(
-        h('h2', null, t('模型')), seg(modelOptions(agent), model, (v) => { model = v; draw(); onChange(model, effort); }, t('模型'), 'grid2'),
+        h('h2', null, t('模型')),
+        fixedModel
+          ? h('p', { class: 'fixed' }, h('b', null, modelName(model, agent)), h('span', null, fixedModel))
+          : seg(modelOptions(agent), model, (v) => { model = v; draw(); onChange(model, effort); }, t('模型'), 'grid2'),
         h('h2', null, t('思考强度')), seg(effortOptions(agent, model), effort, (v) => { effort = v; onChange(model, effort); }, t('思考强度'), 'mono'));
       onChange(model, effort);
     };
@@ -1102,7 +1112,7 @@
     // Claude Code open in a window on the computer: what the phone sends is typed into that window
     const pcTypes = () => C.pc.open && C.pc.typable && C.state !== 'running';
     const pcWaits = () => pcTypes() && C.pc.waiting;
-    const WAITS = { 'input needed': '一个问题', 'permission prompt': '一个权限确认', 'dialog open': '一个打开的界面' };
+    const WAITS = { 'input needed': N_('一个问题'), 'permission prompt': N_('一个权限确认'), 'dialog open': N_('一个打开的界面') };
 
     function drawHeader() {
       const s = C.session || {};
@@ -1115,7 +1125,7 @@
       comp.setNote(!pcTypes() ? '' : pcBusy() ? t('这条会排进电脑上的窗口，做完手上这一步就接上') : t('这条会输入到电脑上开着的窗口'));
       comp.setBranch(heldByPc() ? t('电脑上开着这个对话，这条会发到新分支里') : '');
       pcNote.hidden = !C.pc.open && !pcBusy() && !heldByPc() && !dshHeld();
-      const what = t(WAITS[C.pc.waitingFor] || '一个需要你处理的界面');
+      const what = t(WAITS[C.pc.waitingFor] || N_('一个需要你处理的界面'));
       pcNote.replaceChildren(...(pcWaits()
         ? [icon('alert-triangle', 'xs'), h('span', null, t('电脑上的窗口正等你回答{what}。在电脑上处理完，手机上才能接着发。', { what }))]
         : pcBusy()
@@ -1141,10 +1151,32 @@
     // to the window on the computer, or one that did not get there.
     const waitingUser = (e) => e.k === 'user' && ['queued', 'canceled', 'pc', 'pc_queued', 'pc_failed'].includes(e.state);
 
-    // events (history, then live ones the history does not have yet) -> blocks -> DOM, reusing unchanged elements
+    // events (history, with the live ones the history does not have yet in their place by time; messages still
+    // waiting their turn last) -> blocks -> DOM, reusing unchanged elements. Live ones older than the page of history
+    // belong to pages not loaded and stay out, so nothing lands out of order under the newest steps.
     function events() {
       const ids = new Set(C.hist.map((e) => e.id));
-      return [...C.hist, ...[...C.live.values()].filter((e) => !ids.has(e.id))];
+      const hist = [];
+      const waiting = [];
+      for (const e of C.hist) (waitingUser(e) ? waiting : hist).push(e);
+      const first = hist.find((e) => e.t)?.t || 0;
+      const extra = [];
+      for (const e of C.live.values()) {
+        if (ids.has(e.id)) continue;
+        if (waitingUser(e)) waiting.push(e);
+        else if (!(C.hasMore && e.t && e.t < first)) extra.push(e);
+      }
+      const byTime = (a, b) => (a.t || 0) - (b.t || 0);
+      waiting.sort(byTime);
+      if (!extra.length) return [...hist, ...waiting];
+      extra.sort(byTime);
+      const out = [];
+      let j = 0;
+      for (const e of hist) {
+        while (j < extra.length && extra[j].t && e.t && extra[j].t < e.t) out.push(extra[j++]);
+        out.push(e);
+      }
+      return [...out, ...extra.slice(j), ...waiting];
     }
 
     function blocks() {
@@ -1153,10 +1185,11 @@
       const tools = new Map();
       let day = '';
       let turn = null;
+      // a day is marked once, where it begins: a stray older time never brings an earlier day back
       const add = (b, ts) => {
         if (ts) {
           const k = dayKey(ts);
-          if (k !== day) {
+          if (k > day) {
             day = k;
             out.push({ key: `d${k}`, type: 'day', t: ts });
           }
@@ -1248,7 +1281,7 @@
     // A message the conversation can be branched from: one in the record (Codex: with the turn it opened).
     const branchable = (e) => !e.pending && !e.state && !e.command && agentOf(C.session) !== 'dsh' && (agentOf(C.session) === 'codex' ? !!e.turn : /^[0-9a-f-]{36}$/i.test(e.id));
 
-    const STATES = { canceled: '已取消', pc: '正送到电脑上的窗口', pc_queued: '在电脑上排队', pc_failed: '电脑上的窗口没收到' };
+    const STATES = { canceled: N_('已取消'), pc: N_('正送到电脑上的窗口'), pc_queued: N_('在电脑上排队'), pc_failed: N_('电脑上的窗口没收到') };
 
     function drawUser(b) {
       const e = b.e;
@@ -1359,7 +1392,11 @@
       const wasNear = nearBottom();
       const list = blocks();
       const old = new Map();
-      for (const el of timeline.children) if (el.dataset.key) old.set(el.dataset.key, el);
+      for (const el of [...timeline.children]) {
+        if (!el.dataset.key) continue;
+        if (old.has(el.dataset.key)) el.remove();         // one element per block, never a second left behind
+        else old.set(el.dataset.key, el);
+      }
       let prev = null;
       let more = timeline.querySelector('.more');
       if (C.hasMore) {
@@ -1367,7 +1404,10 @@
         if (timeline.firstChild !== more) timeline.prepend(more);
         prev = more;
       } else if (more) more.remove();
+      const used = new Set();
       for (const b of list) {
+        if (used.has(b.key)) continue;
+        used.add(b.key);
         let el = old.get(b.key);
         if (!el || el.dataset.ver !== b.ver) {
           const fresh = drawBlock(b);
@@ -1442,7 +1482,12 @@
         C.queue = r.session.queue;
         const ids = new Set(r.events.map((e) => e.id));
         const firstT = r.events.length ? r.events[0].t : Infinity;
-        C.hist = [...C.hist.filter((e) => e.t < firstT && !ids.has(e.id)), ...r.events];
+        // The computer's answer lists every message of the phone's still on its way. One the phone shows that is
+        // older than the answer and not in it has arrived meanwhile (its notice was missed while the phone slept),
+        // or was let go: it goes.
+        const now = r.now || 0;
+        const gone = (e) => e.k === 'user' && e.state && !ids.has(e.id) && now && (e.t || 0) <= now;
+        C.hist = [...C.hist.filter((e) => e.t < firstT && !ids.has(e.id) && !gone(e)), ...r.events];
         if (!C.cursor || C.hist.length === r.events.length) {
           C.cursor = r.cursor;
           C.hasMore = r.hasMore;
@@ -1451,9 +1496,9 @@
         for (const [k, e] of C.live) {
           if (e.k === 'result') lastResult = k;
         }
-        // a message the transcript does not hold yet stays on screen: it is only gone once the history has it
+        // a message the transcript does not hold yet stays on screen until the computer no longer lists it
         for (const [k, e] of [...C.live]) {
-          const keep = (e.k === 'user' && e.state && e.state !== 'canceled' && !ids.has(k)) || (e.k === 'ask' && !ids.has(k)) || k === lastResult;
+          const keep = (e.k === 'user' && e.state && e.state !== 'canceled' && !ids.has(k) && !gone(e)) || (e.k === 'ask' && !ids.has(k)) || k === lastResult;
           if (!keep) C.live.delete(k);
         }
         schedule();
@@ -1471,6 +1516,11 @@
       }
       if (kind === 'ev') {
         C.live.set(d.id, d);
+        // a message's new state (queued in the window, not delivered) replaces the copy the history page brought
+        if (d.k === 'user' && d.state) {
+          const i = C.hist.findIndex((e) => e.id === d.id);
+          if (i >= 0) C.hist[i] = d;
+        }
         if (d.k === 'text' && !d.pc) C.liveText = '';
         if (d.k === 'result') {
           C.liveText = '';
@@ -1493,6 +1543,9 @@
         } else if (d.k === 'activity') {
           C.activity = d;
           if (d.what === 'writing') C.liveText = '';
+        } else if (d.k === 'tune') {
+          // the window on the computer runs with another model or effort now (/model, /effort there or from here)
+          if (C.session) C.session = { ...C.session, model: d.model, modelName: d.modelName, effort: d.effort };
         } else if (d.k === 'pc') {
           const was = C.pc.busy;
           C.pc = { open: !!d.open, busy: !!d.busy, held: !!d.held, waiting: !!d.waiting, waitingFor: d.waitingFor || '', typable: !!d.typable };
@@ -1599,13 +1652,17 @@
         C.session = r.session;
         redraw();
         close();
-        toast(C.state === 'running' ? t('这一轮做完后换上') : r.deferred === 'background' ? t('后台还有任务在跑，跑完再换上') : t('下一条消息起生效'));
-      } catch {
-        toast(t('没保存上'));
+        if (r.via === 'pc') toast(t('电脑上的窗口已经换上'));
+        else toast(C.state === 'running' ? t('这一轮做完后换上') : r.deferred === 'background' ? t('后台还有任务在跑，跑完再换上') : t('下一条消息起生效'));
+      } catch (e) {
+        toast(e.message === 'pc_waiting' ? t('电脑上正等你回答一个问题，在电脑上答完再换') : t('没保存上'));
       }
     });
+    // open in a window on the computer: the effort is typed there as /effort; the model stays the window's
+    const inWindow = agent === 'claude' && C.pc.open && C.pc.typable && C.state !== 'running';
     close = sheet(h('div', { class: 'prefs' },
-      pickers(agent, model, effort, (m, e) => { model = m; effort = e; }),
+      pickers(agent, model, effort, (m, e) => { model = m; effort = e; }, inWindow ? t('跟着电脑上的窗口。要换，在下面发 /model 加模型名，和在电脑上一样') : ''),
+      inWindow ? h('p', { class: 'fixed' }, t('思考强度会在电脑上的窗口里换上，只管那个窗口')) : null,
       save));
   }
 

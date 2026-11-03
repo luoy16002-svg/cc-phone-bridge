@@ -19,8 +19,9 @@ const keys = new Set(['上下文自动压缩了一次', '上下文压缩过，�
 let loose = 0;
 for (const f of ['public/app.js', 'public/pc.js']) {
   const src = read(f).replace(/^\s*\/\/.*$/gm, '').replace(/\s\/\/ .*$/gm, '');
-  for (const m of src.matchAll(/\bt\('((?:[^'\\\n]|\\.)*)'/g)) keys.add(unescape(m[1]));
-  const rest = src.replace(/\bt\('((?:[^'\\\n]|\\.)*)'/g, "t(''");
+  // t('…') shows words now, N_('…') marks words a map hands to t() later
+  for (const m of src.matchAll(/\b(?:t|N_)\('((?:[^'\\\n]|\\.)*)'/g)) keys.add(unescape(m[1]));
+  const rest = src.replace(/\b(?:t|N_)\('((?:[^'\\\n]|\\.)*)'/g, "t(''");
   rest.split('\n').forEach((line, i) => {
     for (const m of line.matchAll(lit)) {
       if (CJK.test(m[1]) && m[1] !== '中文') {

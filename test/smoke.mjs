@@ -471,6 +471,51 @@ async function main() {
     check('and taken back when it lands after all', !!(await LW.until((e) => e.k === 'drop' && e.id === tw2.data.id, 4000)));
     const dup = await api('GET', `/api/sessions/${winId}`);
     check('so it shows once', dup.data.events.filter((e) => e.k === 'user' && e.text === '晚到的一条').length === 1);
+
+    console.log('a quick window, and the model and effort it runs with');
+    const started = Date.now() - 60000;
+    regWin('idle', { startedAt: started });
+    fs.writeFileSync(path.join(DATA, 'typein-echo.json'), JSON.stringify({ file: wfile, sessionId: winId, cwd: CWD }));
+    await sleep(400);
+    const fast = await api('POST', `/api/sessions/${winId}/messages`, { text: '窗口比助手先写下' });
+    check('written down by the window before the typing ended: taken back', !!(await LW.until((e) => e.k === 'drop' && e.id === fast.data.id, 3000)));
+    await sleep(1800);                                              // past the 1.2 s this test gives a window
+    check('and never reported as not delivered', !LW.got.some((e) => e.id === fast.data.id && e.state === 'pc_failed'));
+    const seen = await api('GET', `/api/sessions/${winId}`);
+    check('the history has it once, as the window wrote it', seen.data.events.filter((e) => e.k === 'user' && e.text === '窗口比助手先写下').length === 1 && !seen.data.events.some((e) => e.id === fast.data.id));
+    check('and says when it was read, so a phone lets go of what has arrived', typeof seen.data.now === 'number' && seen.data.now <= Date.now());
+    check('before any /effort in the window: what the settings give', seen.data.session.effort === 'xhigh', seen.data.session.effort);
+    const entry = (o) => `${JSON.stringify({ uuid: crypto.randomUUID(), cwd: CWD, sessionId: winId, timestamp: new Date().toISOString(), ...o })}\n`;
+    const effortOut = (lvl, when) => entry({ type: 'user', ...(when ? { timestamp: new Date(when).toISOString() } : {}), message: { role: 'user', content: `<local-command-stdout>Set effort level to ${lvl} (this session only): words</local-command-stdout>` } });
+    fs.appendFileSync(wfile, effortOut('low', started - 3600000));     // another window's, an hour before this one
+    fs.appendFileSync(wfile, entry({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'x', content: 'Set effort level to low' }] } }));
+    fs.appendFileSync(wfile, effortOut('max'));
+    check('/effort max in the window reaches the phone', !!(await LW.until((e) => e.k === 'tune' && e.effort === 'max', 3000)));
+    check('not the effort of an earlier window, nor words in a tool result', !LW.got.some((e) => e.k === 'tune' && e.effort === 'low'));
+    check('the conversation and the list say max', (await api('GET', `/api/sessions/${winId}`)).data.session.effort === 'max'
+      && (await api('GET', '/api/sessions')).data.sessions.find((s) => s.id === winId)?.effort === 'max');
+    const pr = await api('PUT', `/api/sessions/${winId}/prefs`, { model: 'claude-haiku-5-5', effort: 'high' });
+    check('an effort chosen on the phone goes to the window', pr.status === 200 && pr.data.via === 'pc' && pr.data.session.effort === 'high', JSON.stringify(pr.data));
+    check('the model stays the window\'s own', pr.data.session.model === 'claude-opus-5-5', pr.data.session.model);
+    const typedAll = fs.readFileSync(typed, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    const slider = typedAll.find((l) => l.pasted?.[0] === '/effort');
+    check('set in the window\'s /effort slider: from the far left to high, s for this session only, the box kept',
+      !!slider && slider.keys.join() === ['ctrl+s', 'enter', ...Array(5).fill('left'), 'right', 'right', 'backspace'].join() && slider.typed.join() === 'x,s', JSON.stringify(slider));
+    check('never /effort with a level, which would also change the default for new sessions', !typedAll.some((l) => /^\/effort \w/.test(l.pasted?.[0] || '')));
+    check('and the phone hears what the window then uses', !!(await LW.until((e) => e.k === 'tune' && e.effort === 'high', 4000)));
+    check('no /model is typed: it would change the default for new sessions too', !typedAll.some((l) => /^\/model/.test(l.pasted?.[0] || '')));
+    const runsBefore = fs.readFileSync(typed, 'utf8').trim().split('\n').length;
+    const cm = await api('POST', `/api/sessions/${winId}/messages`, { text: '/compact' });
+    check('a slash command from the phone goes to the window too', cm.data?.via === 'pc', JSON.stringify(cm.data));
+    check('and is taken back when the window writes it down', !!(await LW.until((e) => e.k === 'drop' && e.id === cm.data?.id, 3000)));
+    await sleep(1000);
+    const runs = fs.readFileSync(typed, 'utf8').trim().split('\n').slice(runsBefore).map((l) => JSON.parse(l));
+    check('then the letter that kept the box comes off, and nothing else is pressed', runs.length === 2 && runs[0].keys.join() === 'ctrl+s,enter' && runs[1].keys.join() === 'backspace', JSON.stringify(runs));
+    fs.rmSync(path.join(DATA, 'typein-echo.json'));
+    regWin('shell', { startedAt: started });
+    await sleep(600);
+    check('a window running a command counts as working', (await api('GET', `/api/sessions/${winId}`)).data.session.pcBusy === true);
+    regWin('idle', { startedAt: started });
     LW.stop();
     fs.rmSync(winReg, { force: true });
     fakeWindow.kill();

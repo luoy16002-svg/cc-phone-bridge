@@ -13,7 +13,7 @@ Duty Desk is a small server that runs next to Claude Code (and Codex, if you hav
 - **Every conversation on the computer**, newest first, with its folder and model. Conversations that are working sit at the top; ones open in a terminal are marked.
 - **The whole history.** Your prompts, the replies (Markdown, tables, code) and every tool call, folded into one line per turn that counts the steps by kind and times them. Tap to see each command and its output. Transcripts are read from the end in pages, so a 300 MB one opens as fast as a short one.
 - **Carry on any conversation.** It resumes the same session by its id; nothing is copied. Keep writing while it works and the messages queue up. Stop it, or attach pictures.
-- **Watch the computer work.** A conversation running in a terminal on the computer shows up on the phone as it happens.
+- **One conversation with the computer.** A conversation running in a Claude Code window on the computer shows up on the phone as it happens. What you send from the phone is typed into that window, so the window runs it and shows it, and whatever you had half typed there stays in its box. The phone shows the model and effort the window runs with and follows `/effort` changed there; setting the effort on the phone sets it in the window, for that window only, as Claude Code's own picker does.
 - **Start new conversations.** Tap through your project folders to pick one, or make a new folder right there. Choose the model and the effort (`low`, `medium`, `high`, `xhigh`, `max`); the defaults are the computer's own.
 - **A notification when a turn ends** while you're away, through [ntfy](https://ntfy.sh). It says that something finished and how long it took. The conversation's title is left out unless you allow it.
 - **Light and dark**, both drawn by hand, following the phone. A theme is a folder of colours and drawings, so you can add your own.
@@ -156,7 +156,8 @@ flowchart LR
 
 - The list and the history come straight from Claude Code's own transcripts (`<configDir>/projects/<folder>/<session>.jsonl`). Duty Desk keeps no copy of any conversation.
 - A message from the phone runs `claude -p --input-format stream-json --output-format stream-json --resume <id> --model <model> --effort <effort>` in the conversation's folder. The process stays up between messages and closes after 20 idle minutes; at most 3 run at once.
-- While a phone has a conversation open, its transcript is followed every 1.5 seconds, so a turn started in a terminal shows up live. Claude Code's session registry says which conversations are open in a terminal and which are busy.
+- While a phone has a conversation open, its transcript is read the moment it changes, so a turn started in a terminal shows up live. Claude Code's session registry says which conversations are open in a window and which are busy.
+- A conversation open in a Claude Code window gets the phone's messages typed into that window (Windows). Each one shows as on its way until the window writes it down, which is often before the typing has finished; one typed while a turn runs waits in the window's own queue. The window's model and effort are read from its transcript, from where the window started (`/effort` there lasts for that window only). The model is not changed from the phone: in Claude Code `/model` also changes the default for new sessions, so send `/model` yourself when you mean it.
 - The page is plain JavaScript without a framework. [marked](https://marked.js.org) and [DOMPurify](https://github.com/cure53/DOMPurify) render the Markdown; fonts and icons are served by the computer.
 
 ## Security
@@ -187,7 +188,9 @@ A theme is a folder in `public/themes/<id>/`. Its `theme.json` holds the colours
 
 ## Development
 
-- `npm test`: 89 end-to-end checks against a fake Claude Code that writes real transcript files, 46 against a fake Codex app server that keeps real rollout files and locks (no usage spent either way), then a check that every string on screen has an English entry.
+- `npm test`: 129 end-to-end checks against a fake Claude Code that writes real transcript files and a stand-in for a window on the computer, 47 against a fake Codex app server that keeps real rollout files and locks, 45 against a fake DeepSeek Harness (no usage spent), then a check that every string on screen has an English entry.
+- `npm run test:page`: the phone page in WebKit against a real server on made-up conversations, behind a proxy that cuts the live connection as a sleeping phone does: a message whose delivery the phone missed, steps arriving out of order, the effort set in a window. Needs Playwright with WebKit.
+- `npm run test:window-real` (Windows): a real Claude Code window in a pseudo console, so nothing shows on the screen, driven through the bridge with a draft in its box: messages while it is idle and busy, the effort set from the phone mid-turn. Checks that each message arrives once, the draft stays and Claude Code's settings are untouched. Spends a little usage (Haiku).
 - `npm run test:codex-real`: 24 checks with the real Codex CLI in a throwaway `CODEX_HOME`, a local stand-in for the model (no account, no usage) and a second Codex app server playing the Codex app: live turns, held conversations, branches, and handing a conversation back and forth. Skipped when Codex is not installed.
 - `node test/real.mjs`: a short run with the real Claude Code (Haiku, low effort, a temporary folder).
 - `node test/shots.mjs --lang en`: screenshots of every screen at phone and desktop size, on made-up conversations (a fake Codex in a throwaway folder, never your own); needs Playwright with WebKit.

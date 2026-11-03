@@ -5,7 +5,8 @@
 //   typein.exe <pid> --probe    only check that the console can be reached
 //
 // Steps: "T <base64 utf-8>" types text (a line break becomes Ctrl+J, Claude Code's new line), "P <base64 utf-8>"
-// pastes text the way a terminal does (bracketed paste), "K <key>" presses enter, esc, backspace or ctrl+<letter>,
+// pastes text the way a terminal does (bracketed paste), "K <key>" presses enter, esc, backspace, an arrow (up, down,
+// left, right), end, or ctrl+<letter>,
 // "W <ms>" waits. Exit codes: 0 typed, 2 could not attach, 3 no console input, 4 a write failed, 5 bad step.
 // Built on first use with the C# compiler that comes with Windows (see lib/typein.mjs).
 using System;
@@ -84,6 +85,9 @@ static class TypeIn
             case "backspace": Press(o, 0x08, '\b', 0); return true;
             case "up": Press(o, 0x26, '\0', 0x0100); return true;
             case "down": Press(o, 0x28, '\0', 0x0100); return true;
+            case "left": Press(o, 0x25, '\0', 0x0100); return true;
+            case "right": Press(o, 0x27, '\0', 0x0100); return true;
+            case "end": Press(o, 0x23, '\0', 0x0100); return true;
         }
         if (name.Length == 6 && name.StartsWith("ctrl+") && name[5] >= 'a' && name[5] <= 'z')
         {

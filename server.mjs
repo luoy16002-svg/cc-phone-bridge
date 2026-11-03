@@ -19,9 +19,10 @@ import { isLoopback, isPrivate, hostAllowed, addresses } from './lib/net.mjs';
 import { configDir, projectKey, listSessions, sessionFile, sessionMeta, historyPage, lineEvents, preview, parentOf } from './lib/transcripts.mjs';
 import { CodexHub, CodexRunner, rolloutInfo, rolloutLineEvents, rolloutId, codexHome, findRollout, threadLock, lockDir } from './lib/codex.mjs';
 import { push, hasPush } from './lib/push.mjs';
-import { windows as windowList, typeInto, messageSteps, stopSteps, normPrompt, helper as typeHelper, typingEnabled } from './lib/pcwindow.mjs';
+import { windows as windowList, typeInto, messageSteps, effortSteps, stopSteps, normPrompt, helper as typeHelper, typingEnabled } from './lib/pcwindow.mjs';
 import { DshSessions, DshRunner, dshAvailable, dshVersion, dshModelName, changedFolder, sessionsDir, MODELS as DSH_MODELS, EFFORTS as DSH_EFFORTS } from './lib/dsh.mjs';
 import { imageFile, cleanImages } from './lib/images.mjs';
+import { windowTune } from './lib/tune.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC = path.join(HERE, 'public');
@@ -166,12 +167,36 @@ function effective(id) {
   return { model, effort: p.effort || effortFor(model) };
 }
 
+// A conversation open in a window on the computer that the phone types into runs with that window's model and
+// effort: what /model and /effort set there (for that window only), else what the settings give, read from the
+// transcript. null otherwise: then the phone's own run carries it on, with what the phone chose.
+function tuneOf(id, w) {
+  if (!w?.typable) return null;
+  const file = sessionFile(id);
+  if (!file) return null;
+  const t = windowTune(id, file, w.startedAt, () => tuneChanged(id));
+  const model = t.model || defaults().model;
+  return { model, modelName: modelName(model), effort: t.effort && t.effort !== 'auto' ? t.effort : effortFor(model) };
+}
+
+// The window changed its model or effort: an open conversation and the list hear of it at once.
+const tuneSent = new Map();
+function tuneChanged(id) {
+  const tune = tuneOf(id, pcWindows().get(id));
+  if (!tune) return;
+  const key = `${tune.model}|${tune.effort}`;
+  if (tuneSent.get(id) === key) return;
+  tuneSent.set(id, key);
+  broadcast(id, 'tr', { k: 'tune', ...tune });
+  deskUpdate(id);
+}
+
 const folderOf = (cwd) => String(cwd || '').split(/[\\/]/).filter(Boolean).pop() || cwd;
 
 function summary(meta, windows = pcWindows()) {
   const r = runners.get(meta.id);
-  const eff = effective(meta.id);
   const w = windows.get(meta.id);
+  const eff = (r?.state !== 'running' && tuneOf(meta.id, w)) || effective(meta.id);
   return {
     agent: 'claude', id: meta.id, title: meta.title, cwd: meta.cwd, folder: folderOf(meta.cwd), lastPrompt: meta.lastPrompt,
     lastReply: meta.lastReply, lastModel: meta.model ? modelName(meta.model) : '',
@@ -481,6 +506,7 @@ function pollTail(id, t) {
     if (shown?.has(ev.id)) continue;
     broadcast(id, 'ev', ours ? ev : { ...ev, pc: true });
   }
+  if (w) tuneOf(id, w);                                 // /model or /effort typed in the window: reads on, says so
 }
 
 // A followed file stays followed while a phone watches it, or while a message typed into its window waits to show.
@@ -531,10 +557,19 @@ function pendingQueued(id, content) {
   pendingUpdate(id, p);
 }
 
-// Also one already reported as not delivered: on a slow computer it can land after the wait ran out.
+// Also one already reported as not delivered: on a slow computer it can land after the wait ran out. A slash command
+// gives the window's box back once it is done, which is when the window writes it down: then the letter that kept
+// the box comes off.
 function pendingArrived(id, ev) {
   const p = (pcPending.get(id) || []).find((x) => pendingMatch(x, ev.text, ev.images));
-  if (p) pendingDone(id, p);
+  if (!p) return;
+  pendingDone(id, p);
+  if (p.after) {
+    setTimeout(() => {
+      const w = pcWindows().get(id);
+      if (w && w.pid === p.pid && !w.waiting) typeInto(w.pid, p.after);
+    }, 500);
+  }
 }
 
 function expirePending(id) {
@@ -544,7 +579,7 @@ function expirePending(id) {
 }
 
 function pendingFailed(id, p) {
-  if (p.ev.state !== 'pc') return;
+  if (p.ev.state !== 'pc' || !(pcPending.get(id) || []).includes(p)) return;    // it got there meanwhile
   p.ev = { ...p.ev, state: 'pc_failed' };
   pendingUpdate(id, p);
   log(`session ${id}: the window did not take in a message typed from the phone`);
@@ -576,9 +611,14 @@ async function typeIntoWindow(id, w, text, names) {
   if (image && want.endsWith('.exe') && image !== want) return { error: 'pc_unreachable', detail: 'not_claude' };
   const { steps, after } = messageSteps(text, uploadPaths(names));
   const ev = { k: 'user', id: `pc-${crypto.randomBytes(6).toString('hex')}`, t: Date.now(), text, images: names, pending: true, state: 'pc' };
-  const p = { ev, norm: normPrompt(text), images: names.length };
+  const p = { ev, norm: normPrompt(text), images: names.length, pid: w.pid, after };
+  // Shown and waiting before the typing starts: the window often writes the message down before the typing helper
+  // has even returned, and the transcript then takes it back at once.
   pendingList(id).push(p);
   startTail(id);
+  broadcast(id, 'ev', ev);
+  deskUpdate(id);
+  p.timer = setTimeout(() => pendingFailed(id, p), DELIVER_MS);
   const res = await typeInto(w.pid, steps);
   if (!res.ok) {
     pendingDone(id, p);
@@ -587,19 +627,35 @@ async function typeIntoWindow(id, w, text, names) {
   }
   log(`session ${id}: a message from the phone typed into its window (pid ${w.pid})`);
   typedTurns.set(id, { at: Date.now(), busy: !!w.busy });
-  broadcast(id, 'ev', ev);
-  deskUpdate(id);
-  p.timer = setTimeout(() => pendingFailed(id, p), DELIVER_MS);
-  if (after) {
-    // a slash command does not give the box back by itself: fetch it, unless the command opened something
-    await sleep(900);
-    const w2 = pcWindows().get(id);
-    if (w2 && !w2.waiting) await typeInto(w.pid, after);
-  }
+  pollSoon(id);
   // the phone's own run of this conversation, if one is still open, has an old view of it now: let it go
   const r = runners.get(id);
   if (r && r.proc && r.state !== 'running' && !r.hasBackground?.()) r.close('a window on the computer has it');
   return { id: ev.id };
+}
+
+// An effort chosen on the phone for a conversation open in a window: set there in Claude Code's own /effort slider
+// for this session only, which runs at once even mid-turn, as if chosen on the keyboard; what the window then writes
+// down is what the phone shows. (/effort with a level, like /model, would also change the default for new sessions.)
+// The model is not changed from here: that is a /model the person sends on purpose.
+async function tuneWindow(id, w, cur, next) {
+  if (next.effort === cur.effort) return true;
+  const steps = effortSteps(EFFORTS, next.effort);
+  if (!steps) return false;
+  const res = await typeInto(w.pid, steps);
+  if (!res.ok) {
+    log(`session ${id}: setting the effort in its window (pid ${w.pid}) failed: ${res.code}`);
+    return false;
+  }
+  log(`session ${id}: effort set in its window (pid ${w.pid})`);
+  // whatever the window made of it (a busy window runs the commands after its turn), the phone hears in a moment
+  setTimeout(async () => {
+    const file = sessionFile(id);
+    if (file) await windowTune(id, file, w.startedAt).reading;
+    tuneSent.delete(id);
+    tuneChanged(id);
+  }, 2500);
+  return true;
 }
 
 // What the phone shows of a Claude Code conversation that the transcript does not have yet: its messages waiting
@@ -1733,13 +1789,15 @@ async function handleApi(req, res, url, ip) {
   const file = sessionFile(id);
 
   if (method === 'GET' && sub === '') {
+    const now = Date.now();
     const page = file ? historyPage(file, { want: 140 }) : { events: [], cursor: 0, hasMore: false };
     const r = runners.get(id);
     const since = page.events.length ? page.events[0].t : 0;
     const notes = r ? r.notes.filter((n) => n.t >= since && !r.live.includes(n)) : [];
     // messages sent from the phone that the transcript does not hold yet stay in the history the phone gets
     const events = [...page.events, ...notes, ...pendingEvents(id, page.events)].sort((a, b) => (a.t || 0) - (b.t || 0));
-    return json(res, 200, { session: { ...summary(meta), from: await branchOrigin(id) }, events, cursor: page.cursor, hasMore: page.hasMore });
+    // `now`: messages of the phone's older than this that are not in `events` have arrived (or were let go)
+    return json(res, 200, { session: { ...summary(meta), from: await branchOrigin(id) }, events, cursor: page.cursor, hasMore: page.hasMore, now });
   }
   if (method === 'GET' && sub === '/history') {
     const before = Number(url.searchParams.get('before'));
@@ -1752,6 +1810,8 @@ async function handleApi(req, res, url, ip) {
     const w = pcWindows().get(id);
     sse(res, 'tr', { k: 'state', state: r?.state || 'idle', queue: r?.queue.length || 0 });
     sse(res, 'tr', pcInfo(w));
+    const tune = r?.state !== 'running' && tuneOf(id, w);
+    if (tune) sse(res, 'tr', { k: 'tune', ...tune });
     if (r) {
       for (const ev of r.live) sse(res, 'ev', ev);
       if (r.state === 'running') sse(res, 'tr', { k: 'live', text: r.liveText || '', activity: r.activity || null, since: r.turn?.start || Date.now() });
@@ -1803,11 +1863,22 @@ async function handleApi(req, res, url, ip) {
   }
   if (method === 'PUT' && sub === '/prefs') {
     const b = await readBody(req);
-    const cur = effective(id);
+    const r = runners.get(id);
+    const w = pcWindows().get(id);
+    const inWindow = w?.typable && r?.state !== 'running';
+    const cur = (inWindow && tuneOf(id, w)) || effective(id);
     const next = { model: MODELS.some((x) => x.id === b.model) ? b.model : cur.model, effort: EFFORTS.includes(b.effort) ? b.effort : cur.effort };
+    if (inWindow) {
+      // open in a window on the computer: the window changes its effort over, its model stays the window's own
+      if (w.waiting) return json(res, 409, { error: 'pc_waiting', waitingFor: w.waitingFor });
+      next.model = cur.model;
+      if (!(await tuneWindow(id, w, cur, next))) return json(res, 502, { error: 'pc_unreachable' });
+      store.prefs[id] = { ...store.prefs[id], effort: next.effort };
+      store.savePrefs();
+      return json(res, 200, { session: { ...summary(meta), effort: next.effort }, via: 'pc' });
+    }
     store.prefs[id] = { ...store.prefs[id], ...next };
     store.savePrefs();
-    const r = runners.get(id);
     let deferred = '';
     if (r && (r.model !== next.model || r.effort !== next.effort)) {
       r.model = next.model;

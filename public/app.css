@@ -336,6 +336,8 @@ html.phone #app {
 .pick .seg.mono { flex-wrap: wrap; }
 .pick .seg.mono button { flex: 1 0 auto; width: auto; }
 .prefs h2 { font-size: 15.5px; margin: 4px 0 0; font-weight: 400; color: var(--accent); }
+.pick .fixed, .prefs .fixed { margin: 0; font-size: 14px; line-height: 1.6; color: var(--ink-2); }
+.pick .fixed b { display: block; font-weight: 400; font-size: 16px; color: var(--ink); }
 .prefs .btn { margin-top: 6px; }
 .viewer { position: absolute; inset: 0; z-index: 40; background: color-mix(in srgb, var(--bg) 96%, transparent); display: grid; place-items: center; padding: 20px; }
 .viewer img { max-width: 100%; max-height: 100%; border-radius: 10px; }

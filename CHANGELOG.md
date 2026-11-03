@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.7.0 (2026-11-03)
+
+- **A message typed into a window on the computer no longer shows as not delivered when it was.** A window often writes the message down before the typing has even finished; the bridge took it back at once, and then reported it as not delivered twelve seconds later anyway. Every message the phone typed into a window was affected. Now it is shown and watched for before the typing starts.
+- **No more messages stuck "on their way" at the bottom.** A phone that slept or lost its connection missed the notice that a message had arrived, and kept showing it forever. On reconnecting, the phone now drops what the computer no longer lists as on its way, and a message's later state (queued in the window, not delivered) replaces the one it first showed.
+- **Days are marked once.** A step dated earlier than the newest ones (from a run of the phone's own, or written late) went to the bottom and brought "Yesterday" back under "Today"; every redraw then left another pair of day marks behind, until the screen filled with them. Steps now go where their time puts them, a day is marked once where it begins, and a redraw never leaves an element behind.
+- **The effort follows the window.** The phone shows the model and effort a Claude Code window on the computer runs with, read from its transcript, and changes as soon as `/effort` is used in that window. Setting the effort on the phone sets it in the window for that window only, with Claude Code's own `/effort` slider and its "this session only" key, mid-turn too. The model stays the window's: in Claude Code `/model` also changes the default for new sessions, so the phone leaves that to a `/model` you send on purpose.
+- **A window running a command counts as working.** Claude Code reports a running shell step as its own status; the phone took that for idle.
+- **Slash commands sent to a window keep what is in its box.** Claude Code gives the box back once a command is done; the bridge used to stash it again by mistake. It now waits for the window to write the command down and only takes off the letter it added.
+- Tests: the fake window can write a message down before the typing ends; `npm run test:page` drives the phone page in WebKit through a proxy that cuts the connection; `npm run test:window-real` runs a real Claude Code window in a pseudo console, with nothing on the screen.
+
 ## 1.6.0 (2026-10-30)
 
 - **DeepSeek Harness.** When the desktop app is installed, its conversations join the list, marked DeepSeek. Read them in full, follow a turn running on the computer, carry them on, stop them, start new ones, and answer a step that asks first. Turns from the phone run in the harness's own SDK runtime, with what you set up for the desktop app (your own providers too) and the conversation's own permissions; the model list shows the models your conversations use.
