@@ -1199,6 +1199,7 @@ function replayed(req, res, device) {
 function openSse(req, res) {
   res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-store, no-transform', Connection: 'keep-alive', ...SECURITY });
   res.write(': open\n\n');
+  sse(res, 'hello', { version: VERSION });              // a page older than the server loads again
   const hb = setInterval(() => res.write(': ping\n\n'), 10000);
   req.on('close', () => clearInterval(hb));
 }

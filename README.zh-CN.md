@@ -135,7 +135,7 @@ Codex 按它自己 `config.toml` 里的审批设置走。手机上发起的一�
 ## 开发
 
 - `npm test`：用假的 Claude Code（像真的一样写记录文件）和一个代替电脑窗口的小程序跑 129 项端到端检查，用假的 Codex app-server（像真的一样写记录文件、加锁）跑 47 项，用假的 DeepSeek Harness 跑 45 项，都不花用量；再检查界面上每句话都有英文。
-- `npm run test:page`：在 WebKit 里打开手机页面，连真的服务器和编出来的对话，中间隔一个能掐断实时连接的代理，模拟手机睡着：送达通知没收到的消息、乱序到达的步骤、在窗口里换的思考强度。要装带 WebKit 的 Playwright。
+- `npm run test:page`：在 WebKit 里打开手机页面，连真的服务器和编出来的对话，中间隔一个能掐断实时连接的代理，模拟手机睡着：送达通知没收到的消息、乱序到达的步骤、在窗口里换的思考强度、页面开着时电脑上更新了版本。要装带 WebKit 的 Playwright。
 - `npm run test:window-real`（Windows）：在伪控制台里开一个真的 Claude Code 窗口，屏幕上什么都不出现，输入框里先放一段草稿，再经桥接去发：空闲时、忙的时候各发消息，忙到一半从手机换思考强度。检查每条消息只到一次、草稿还在、Claude Code 的设置没被改。会花一点用量（Haiku）。
 - `npm run test:codex-real`：用真的 Codex 命令行跑 24 项：临时的 `CODEX_HOME`，本地模拟的模型（不用账号，不花用量），再起一个 Codex app-server 扮演桌面版，检查实时跟随、被占用的对话、分支，以及对话在手机和电脑之间来回交接。没装 Codex 时跳过。
 - `node test/real.mjs`：用真的 Claude Code（Haiku，低强度，临时文件夹）跑一小段。

@@ -75,6 +75,7 @@ const server = spawn(process.execPath, [path.join(ROOT, 'server.mjs')], {
   stdio: ['ignore', 'inherit', 'inherit'],
 });
 let asleep = false;
+let fakeVersion = '';                                  // set: the server seems to have been updated
 const streams = new Set();
 const proxy = http.createServer((req, res) => {
   const live = /\/stream$/.test(req.url.split('?')[0]);
@@ -85,7 +86,8 @@ const proxy = http.createServer((req, res) => {
   }
   const up = http.request({ host: '127.0.0.1', port: PORT, method: req.method, path: req.url, headers: { ...req.headers, host: `127.0.0.1:${PORT}` } }, (r) => {
     res.writeHead(r.statusCode, r.headers);
-    r.pipe(res);
+    if (live && fakeVersion) r.on('data', (c) => res.write(String(c).replace(/("version":")[^"]+"/, `$1${fakeVersion}"`))).on('end', () => res.end());
+    else r.pipe(res);
     if (live) {
       const s = { req, res, up: r };
       streams.add(s);
@@ -174,6 +176,22 @@ try {
   check('the model is the window\'s own, with how to change it', /Opus 5\.5/.test(sheet) && /\/model/.test(sheet) && !(await page.$('.prefs .seg.grid2')), sheet);
   check('the effort can be chosen, the window\'s current one marked', (await page.textContent('.prefs .seg.mono .on')) === 'max');
   if (shot) await page.screenshot({ path: shot.replace(/(\.png)?$/, '-prefs.png') });
+  await page.click('.shade', { position: { x: 12, y: 740 } });
+
+  console.log('the computer is updated while the page is open');
+  let loads = 0;
+  page.on('load', () => { loads++; });
+  await page.fill('textarea', '一半的草稿');
+  await sleep(300);
+  fakeVersion = '99.0.0';
+  sleepPhone();
+  await sleep(500);
+  asleep = false;
+  await page.waitForEvent('load', { timeout: 15000 }).catch(() => null);
+  await page.waitForSelector('textarea', { timeout: 10000 }).catch(() => null);
+  await sleep(4000);                                              // its new connections hear the same version again
+  check('the page loads again once, by itself', loads === 1, `${loads} loads`);
+  check('the draft is still in the box', (await page.inputValue('textarea').catch(() => '')) === '一半的草稿');
 } catch (e) {
   fails++;
   console.log('ERROR', e.stack || e);

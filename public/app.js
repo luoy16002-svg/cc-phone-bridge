@@ -237,7 +237,8 @@
             }
             if (data) {
               try {
-                onEvent(ev, JSON.parse(data));
+                if (ev === 'hello') checkVersion(JSON.parse(data).version);
+                else onEvent(ev, JSON.parse(data));
               } catch (e) {
                 console.error(e);
               }
@@ -263,6 +264,22 @@
     };
     S.streams.push(handle);
     return handle;
+  }
+
+  // The computer says its version on every connection. When it changes, this page is the old one: it loads again,
+  // once per version (drafts are kept on the phone), so a page never runs against a newer server.
+  function checkVersion(v) {
+    if (!v) return;
+    if (!S.version) {
+      S.version = v;
+      return;
+    }
+    if (v === S.version) return;
+    try {
+      if (sessionStorage.getItem('ccpb.reloadedFor') === v) return;
+      sessionStorage.setItem('ccpb.reloadedFor', v);
+    } catch { /* private mode: load again all the same */ }
+    location.reload();
   }
 
   function stopAll() {

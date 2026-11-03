@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.7.1 (2026-11-03)
+
+- **An open page catches up with an updated computer.** The computer says its version on every live connection; when it has changed, the page loads again by itself, once, and whatever you were typing stays in the box. A page left open on the phone no longer runs old code against a newer server.
+
 ## 1.7.0 (2026-11-03)
 
 - **A message typed into a window on the computer no longer shows as not delivered when it was.** A window often writes the message down before the typing has even finished; the bridge took it back at once, and then reported it as not delivered twelve seconds later anyway. Every message the phone typed into a window was affected. Now it is shown and watched for before the typing starts.
